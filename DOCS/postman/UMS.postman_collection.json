@@ -1,0 +1,302 @@
+{
+  "info": {
+    "_postman_id": "ums-collection",
+    "name": "User Management Service",
+    "description": "F-01 Registration, F-02 OTP (email delivery), F-03 Login/Session/Password Recovery, F-04 Account Deletion. Requests are ordered to match docs/RUN_APPLICATION.md's E2E flow. Requests that auto-chain do so via response-body test scripts that write into the active environment (userId, jwt). Requests whose token arrives by email (activationToken, otp, recoveryToken, deletionToken) cannot be auto-chained without email access — set them manually in the environment (in local dev without real SendGrid credentials, read the plaintext value from the DB; see docs/RUN_APPLICATION.md).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Registration (F-01)",
+      "item": [
+        {
+          "name": "POST /api/v1/users/register",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"emailAddress\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"passwordConfirmation\": \"{{password}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/register", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "register"] }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('username')) {",
+                  "  const uniq = Date.now();",
+                  "  pm.environment.set('username', 'pmuser' + uniq);",
+                  "  pm.environment.set('email', 'pmuser' + uniq + '@example.com');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "if (body.userId) pm.environment.set('userId', body.userId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/users/activate",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"token\": \"{{activationToken}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/activate", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "activate"] },
+            "description": "Set {{activationToken}} manually first — value comes from the activation email (or, in local dev without a real SendGrid key, SELECT token_value FROM activation_tokens WHERE user_id = '{{userId}}')."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/admin/users/:user_id/resend-confirmation",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminBearerToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/users/{{userId}}/resend-confirmation",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "admin", "users", "{{userId}}", "resend-confirmation"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 202 (or 409 if already activated)', () => pm.expect([202,409]).to.include(pm.response.code));"] }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "OTP (F-02, email delivery)",
+      "item": [
+        {
+          "name": "POST /api/v1/otp/send",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{userId}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/otp/send", "host": ["{{baseUrl}}"], "path": ["api", "v1", "otp", "send"] },
+            "description": "No verify endpoint exists in this API — response only confirms dispatch. The plaintext OTP is never returned; it is only ever visible in the delivered email."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 202', () => pm.response.to.have.status(202));"] }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/otp/resend",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"userId\": \"{{userId}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/otp/resend", "host": ["{{baseUrl}}"], "path": ["api", "v1", "otp", "resend"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 202', () => pm.response.to.have.status(202));"] }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Auth / Login (F-03)",
+      "item": [
+        {
+          "name": "POST /api/v1/auth/login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.token) pm.environment.set('jwt', body.token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/logout", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "logout"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/password-recovery",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/password-recovery", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "password-recovery"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 202', () => pm.response.to.have.status(202));"] }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/password-reset",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"recovery_token\": \"{{recoveryToken}}\",\n  \"new_password\": \"{{newPassword}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/password-reset", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "password-reset"] },
+            "description": "Set {{recoveryToken}} manually first — value comes from the recovery email (or SELECT token FROM password_recovery_requests WHERE user_id = '{{userId}}' ORDER BY requested_at DESC LIMIT 1 in local dev)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/login (with new password)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{newPassword}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.token) pm.environment.set('jwt', body.token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Account Deletion (F-04)",
+      "item": [
+        {
+          "name": "POST /api/v1/users/deletion-requests",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/users/deletion-requests", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "deletion-requests"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 202', () => pm.response.to.have.status(202));"] }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /api/v1/users/deletion-requests (cancel)",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{jwt}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/users/deletion-requests", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "deletion-requests"] },
+            "description": "Cancels the pending request created by the previous call. Run this OR the confirm request below, not both, if you want to keep the test account alive vs. actually delete it."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/users/deletion-requests/confirm",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"token\": \"{{deletionToken}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/deletion-requests/confirm", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "deletion-requests", "confirm"] },
+            "description": "Set {{deletionToken}} manually first — value comes from the deletion-confirmation email (or SELECT token_value FROM account_deletion_requests WHERE user_id = '{{userId}}' AND status = 'pending' in local dev). This permanently anonymizes/deletes the account."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 200', () => pm.response.to.have.status(200));"] }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/auth/login (verify deleted account cannot authenticate)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{newPassword}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status 401 (deleted account cannot log in)', () => pm.response.to.have.status(401));"] }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
