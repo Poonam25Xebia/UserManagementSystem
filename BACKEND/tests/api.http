@@ -1,0 +1,133 @@
+### User Management Service — REST Client requests (VS Code "REST Client" extension)
+### Variables below; override @baseUrl etc. per environment. Chained values
+### (userId, jwt) are captured from responses automatically by REST Client
+### when you click "Send Request" in order, top to bottom.
+
+@baseUrl = http://localhost:3000
+@adminBearerToken = your_admin_bearer_token_here
+@username = httpuser{{$timestamp}}
+@email = httpuser{{$timestamp}}@example.com
+@password = Sup3r$ecretPW1
+@newPassword = N3wSup3r$ecretPW2
+
+### 1. Health check
+GET {{baseUrl}}/health
+
+### 2. Register user
+# @name register
+POST {{baseUrl}}/api/v1/users/register
+Content-Type: application/json
+
+{
+  "username": "{{username}}",
+  "emailAddress": "{{email}}",
+  "password": "{{password}}",
+  "passwordConfirmation": "{{password}}"
+}
+
+### 3. Activate user
+### Set activationToken manually — from the activation email, or in local dev:
+### SELECT token_value FROM activation_tokens WHERE user_id = '{{register.response.body.userId}}';
+@activationToken = REPLACE_ME
+POST {{baseUrl}}/api/v1/users/activate
+Content-Type: application/json
+
+{
+  "token": "{{activationToken}}"
+}
+
+### 4. Admin: resend confirmation email
+POST {{baseUrl}}/api/v1/admin/users/{{register.response.body.userId}}/resend-confirmation
+Authorization: Bearer {{adminBearerToken}}
+
+### 5. Send OTP
+POST {{baseUrl}}/api/v1/otp/send
+Content-Type: application/json
+
+{
+  "userId": "{{register.response.body.userId}}"
+}
+
+### 6. Resend OTP
+POST {{baseUrl}}/api/v1/otp/resend
+Content-Type: application/json
+
+{
+  "userId": "{{register.response.body.userId}}"
+}
+
+### 7. Login
+# @name login
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}"
+}
+
+### 8. Call an authenticated endpoint (request account deletion, proves session middleware works)
+POST {{baseUrl}}/api/v1/users/deletion-requests
+Authorization: Bearer {{login.response.body.token}}
+
+### 9. Cancel that deletion request (keep the account alive for the rest of the flow)
+DELETE {{baseUrl}}/api/v1/users/deletion-requests
+Authorization: Bearer {{login.response.body.token}}
+
+### 10. Logout
+POST {{baseUrl}}/api/v1/auth/logout
+Authorization: Bearer {{login.response.body.token}}
+
+### 11. Password recovery request
+POST {{baseUrl}}/api/v1/auth/password-recovery
+Content-Type: application/json
+
+{
+  "email": "{{email}}"
+}
+
+### 12. Password reset
+### Set recoveryToken manually — from the recovery email, or in local dev:
+### SELECT token FROM password_recovery_requests WHERE user_id = '{{register.response.body.userId}}' ORDER BY requested_at DESC LIMIT 1;
+@recoveryToken = REPLACE_ME
+POST {{baseUrl}}/api/v1/auth/password-reset
+Content-Type: application/json
+
+{
+  "recovery_token": "{{recoveryToken}}",
+  "new_password": "{{newPassword}}"
+}
+
+### 13. Login again with the new password
+# @name loginAgain
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{newPassword}}"
+}
+
+### 14. Request account deletion (for real this time)
+POST {{baseUrl}}/api/v1/users/deletion-requests
+Authorization: Bearer {{loginAgain.response.body.token}}
+
+### 15. Confirm account deletion
+### Set deletionToken manually — from the deletion-confirmation email, or in local dev:
+### SELECT token_value FROM account_deletion_requests WHERE user_id = '{{register.response.body.userId}}' AND status = 'pending';
+@deletionToken = REPLACE_ME
+POST {{baseUrl}}/api/v1/users/deletion-requests/confirm
+Content-Type: application/json
+
+{
+  "token": "{{deletionToken}}"
+}
+
+### 16. Attempt login — must fail (401) since the account is deleted
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{newPassword}}"
+}

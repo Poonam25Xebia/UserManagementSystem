@@ -1,0 +1,9 @@
+
+> user-management-service@1.0.0 test
+> jest --testPathIgnorePatterns=integration --runInBand
+
+No tests found, exiting with code 1
+Run with `--passWithNoTests` to exit with code 0
+In C:\Users\PoonamBiswas\devPB\AI@SDLC\SPEC_GENERATION\UMS
+  54 files checked across 2 projects. Run with `--verbose` for more details.
+Pattern:  - 0 matches

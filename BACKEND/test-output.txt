@@ -1,0 +1,279 @@
+
+> user-management-service@1.0.0 test
+> jest --runInBand
+
+FAIL integration src/integration/registration.integration.spec.ts
+  Integration | Registration and activation
+    × POST /api/v1/users/register happy path creates user, token, and queued email record (104 ms)
+    × POST /api/v1/users/register returns 422 for missing mandatory fields (127 ms)
+    × POST /api/v1/users/register returns 409 for duplicate username case-insensitively (113 ms)
+    × POST /api/v1/users/register returns 422 for password policy violation (119 ms)
+    × POST /api/v1/users/register returns 422 for invalid email format (117 ms)
+    × Concurrent duplicate username registration results in one success and one conflict (126 ms)
+    × POST /api/v1/users/activate activates user and consumes token (219 ms)
+    × POST /api/v1/users/activate returns 410 for expired token (111 ms)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register happy path creates user, token, and queued email record
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register happy path creates user, token, and queued email record
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 422 for missing mandatory fields
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 422 for missing mandatory fields
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 409 for duplicate username case-insensitively
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 409 for duplicate username case-insensitively
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 422 for password policy violation
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 422 for password policy violation
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 422 for invalid email format
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/register returns 422 for invalid email format
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+  ● Integration | Registration and activation › Concurrent duplicate username registration results in one success and one conflict
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › Concurrent duplicate username registration results in one success and one conflict
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/activate activates user and consumes token
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/activate activates user and consumes token
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/activate returns 410 for expired token
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 14 |[39m
+     [90m 15 |[39m [36masync[39m [36mfunction[39m ensureDatabaseSchema(pool[33m:[39m [33mPool[39m)[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 16 |[39m   [36mawait[39m pool[33m.[39mquery([32m`CREATE EXTENSION IF NOT EXISTS pgcrypto`[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 17 |[39m
+     [90m 18 |[39m   [36mawait[39m pool[33m.[39mquery([32m`[39m
+     [90m 19 |[39m [32m    CREATE TABLE IF NOT EXISTS users ([39m[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async ensureDatabaseSchema (src/integration/registration.integration.spec.ts:16:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:85:3)
+
+  ● Integration | Registration and activation › POST /api/v1/users/activate returns 410 for expired token
+
+    SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string
+
+    [0m [90m 76 |[39m
+     [90m 77 |[39m [36masync[39m [36mfunction[39m clearTables()[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+    [31m[1m>[22m[39m[90m 78 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM registration_email_records'[39m)[33m;[39m
+     [90m    |[39m   [31m[1m^[22m[39m
+     [90m 79 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM activation_tokens'[39m)[33m;[39m
+     [90m 80 |[39m   [36mawait[39m pool[33m.[39mquery([32m'DELETE FROM users'[39m)[33m;[39m
+     [90m 81 |[39m }[0m
+
+      at node_modules/pg-pool/index.js:45:11
+      at async clearTables (src/integration/registration.integration.spec.ts:78:3)
+      at async Object.<anonymous> (src/integration/registration.integration.spec.ts:91:3)
+
+Test Suites: 1 failed, 1 total
+Tests:       8 failed, 8 total
+Snapshots:   0 total
+Time:        4.065 s
+Ran all test suites.
+Jest did not exit one second after the test run has completed.
+
+'This usually means that there are asynchronous operations that weren't stopped in your tests. Consider running Jest with `--detectOpenHandles` to troubleshoot this issue.

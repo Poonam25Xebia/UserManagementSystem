@@ -1,0 +1,236 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* === Style Guide Color Palette === */
+  --primary:            #1A73E8;
+  --primary-foreground: #FFFFFF;
+  --primary-hover:      #1557B0;
+  --primary-active:     #0D47A1;
+
+  --secondary:          #00897B;
+  --secondary-foreground: #FFFFFF;
+
+  --accent:             #FF6D00;
+  --accent-foreground:  #FFFFFF;
+
+  --background:         #FFFFFF;
+  --foreground:         #212121;
+
+  --card:               #FFFFFF;
+  --card-foreground:    #212121;
+
+  --popover:            #FFFFFF;
+  --popover-foreground: #212121;
+
+  --muted:              #F5F5F5;
+  --muted-foreground:   #9E9E9E;
+
+  --border:             #E0E0E0;
+  --input:              transparent;
+  --input-background:   #FFFFFF;
+
+  --destructive:        #D32F2F;
+  --destructive-foreground: #FFFFFF;
+
+  --success:            #388E3C;
+  --warning:            #FBC02D;
+
+  --ring:               rgba(26, 115, 232, 0.4);
+  --radius: 0.5rem;
+
+  --font-size: 16px;
+  --font-family-base: 'Inter', 'SF Pro Text', 'Roboto', sans-serif;
+  --font-family-display: 'Inter', 'SF Pro Display', 'Roboto', sans-serif;
+
+  --font-weight-normal:   400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  --shadow-card:       0px 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-card-hover: 0px 4px 16px rgba(0, 0, 0, 0.12);
+  --shadow-btn:        0px 2px 4px rgba(0, 0, 0, 0.10);
+  --shadow-btn-hover:  0px 4px 8px rgba(0, 0, 0, 0.15);
+  --shadow-nav:        0px 2px 4px rgba(0, 0, 0, 0.08);
+  --shadow-modal:      0px 8px 32px rgba(0, 0, 0, 0.24);
+
+  --switch-background: #9E9E9E;
+
+  --sidebar:                   #F5F5F5;
+  --sidebar-foreground:        #212121;
+  --sidebar-primary:           #1A73E8;
+  --sidebar-primary-foreground:#FFFFFF;
+  --sidebar-accent:            rgba(26, 115, 232, 0.08);
+  --sidebar-accent-foreground: #1A73E8;
+  --sidebar-border:            #E0E0E0;
+  --sidebar-ring:              rgba(26, 115, 232, 0.4);
+
+  --chart-1: #1A73E8;
+  --chart-2: #00897B;
+  --chart-3: #FF6D00;
+  --chart-4: #388E3C;
+  --chart-5: #FBC02D;
+}
+
+.dark {
+  --primary:            #4E96F0;
+  --primary-foreground: #FFFFFF;
+  --background:         #121212;
+  --foreground:         #E0E0E0;
+  --card:               #1E1E1E;
+  --card-foreground:    #E0E0E0;
+  --popover:            #1E1E1E;
+  --popover-foreground: #E0E0E0;
+  --muted:              #2C2C2C;
+  --muted-foreground:   #9E9E9E;
+  --border:             #333333;
+  --input:              #2C2C2C;
+  --input-background:   #2C2C2C;
+  --accent:             #FF6D00;
+  --accent-foreground:  #FFFFFF;
+  --destructive:        #EF5350;
+  --destructive-foreground: #FFFFFF;
+  --ring:               rgba(78, 150, 240, 0.5);
+  --font-weight-medium:   500;
+  --font-weight-normal:   400;
+  --chart-1: #4E96F0;
+  --chart-2: #26A69A;
+  --chart-3: #FF8A50;
+  --chart-4: #66BB6A;
+  --chart-5: #FFD54F;
+  --sidebar:                   #1E1E1E;
+  --sidebar-foreground:        #E0E0E0;
+  --sidebar-primary:           #4E96F0;
+  --sidebar-primary-foreground:#FFFFFF;
+  --sidebar-accent:            rgba(78, 150, 240, 0.15);
+  --sidebar-accent-foreground: #4E96F0;
+  --sidebar-border:            #333333;
+  --sidebar-ring:              rgba(78, 150, 240, 0.5);
+}
+
+@theme inline {
+  --color-primary:                    var(--primary);
+  --color-primary-foreground:         var(--primary-foreground);
+  --color-secondary:                  var(--secondary);
+  --color-secondary-foreground:       var(--secondary-foreground);
+  --color-accent:                     var(--accent);
+  --color-accent-foreground:          var(--accent-foreground);
+  --color-background:                 var(--background);
+  --color-foreground:                 var(--foreground);
+  --color-card:                       var(--card);
+  --color-card-foreground:            var(--card-foreground);
+  --color-popover:                    var(--popover);
+  --color-popover-foreground:         var(--popover-foreground);
+  --color-muted:                      var(--muted);
+  --color-muted-foreground:           var(--muted-foreground);
+  --color-border:                     var(--border);
+  --color-input:                      var(--input);
+  --color-input-background:           var(--input-background);
+  --color-switch-background:          var(--switch-background);
+  --color-destructive:                var(--destructive);
+  --color-destructive-foreground:     var(--destructive-foreground);
+  --color-ring:                       var(--ring);
+  --color-chart-1:                    var(--chart-1);
+  --color-chart-2:                    var(--chart-2);
+  --color-chart-3:                    var(--chart-3);
+  --color-chart-4:                    var(--chart-4);
+  --color-chart-5:                    var(--chart-5);
+  --radius-sm:                        calc(var(--radius) - 4px);
+  --radius-md:                        calc(var(--radius) - 2px);
+  --radius-lg:                        var(--radius);
+  --radius-xl:                        calc(var(--radius) + 4px);
+  --color-sidebar:                    var(--sidebar);
+  --color-sidebar-foreground:         var(--sidebar-foreground);
+  --color-sidebar-primary:            var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent:             var(--sidebar-accent);
+  --color-sidebar-accent-foreground:  var(--sidebar-accent-foreground);
+  --color-sidebar-border:             var(--sidebar-border);
+  --color-sidebar-ring:               var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-family-base);
+    font-size: var(--font-size);
+  }
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-family: var(--font-family-display);
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 40px;
+    letter-spacing: -0.5px;
+  }
+
+  h2 {
+    font-family: var(--font-family-display);
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 32px;
+    letter-spacing: -0.25px;
+  }
+
+  h3 {
+    font-family: var(--font-family-base);
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 28px;
+    letter-spacing: 0px;
+  }
+
+  h4 {
+    font-family: var(--font-family-base);
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+  }
+
+  p {
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 24px;
+  }
+
+  label {
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+  }
+
+  button {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 20px;
+    letter-spacing: 0.5px;
+  }
+
+  input {
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 20px;
+  }
+
+  a {
+    color: var(--primary);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+
+  a:hover {
+    color: var(--primary-hover);
+    text-decoration: underline;
+  }
+}
