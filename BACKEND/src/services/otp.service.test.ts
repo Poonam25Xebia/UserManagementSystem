@@ -37,12 +37,14 @@ function buildOtpRequest(overrides: Partial<OtpRequestEntity> = {}): OtpRequestE
   };
 }
 
-function buildMockPool() {
-  const client = { query: jest.fn().mockResolvedValue({ rows: [] }), release: jest.fn() };
-  const pool = { connect: jest.fn().mockResolvedValue(client) } as unknown as ConstructorParameters<
+function buildMockDb() {
+  const run = jest.fn();
+  const prepare = jest.fn().mockReturnValue({ run, get: jest.fn(), all: jest.fn() });
+  const transaction = jest.fn((fn: () => unknown) => () => fn());
+  const db = { prepare, transaction } as unknown as ConstructorParameters<
     typeof OtpRequestRepository
   >[0];
-  return { pool, client };
+  return { db, prepare, run, transaction };
 }
 
 function buildUser(overrides: Partial<UserEntity> = {}): UserEntity {
@@ -68,7 +70,7 @@ describe('DefaultOtpService', () => {
   let otpRequestRepository: jest.Mocked<IOtpRequestRepository>;
   let rateLimitGuard: jest.Mocked<RateLimitGuard>;
   let otpDeliveryPort: jest.Mocked<OtpDeliveryPort>;
-  let mockPool: ReturnType<typeof buildMockPool>;
+  let mockDb: ReturnType<typeof buildMockDb>;
   let service: DefaultOtpService;
 
   beforeEach(() => {
@@ -96,14 +98,14 @@ describe('DefaultOtpService', () => {
     };
     rateLimitGuard = { allow: jest.fn().mockResolvedValue(true) };
     otpDeliveryPort = { dispatch: jest.fn().mockResolvedValue(true) };
-    mockPool = buildMockPool();
+    mockDb = buildMockDb();
 
     service = new DefaultOtpService(
       userRepository,
       otpRequestRepository,
       rateLimitGuard,
       otpDeliveryPort,
-      mockPool.pool,
+      mockDb.db,
     );
   });
 
@@ -219,16 +221,11 @@ describe('DefaultOtpService', () => {
 
       expect(result.userId).toBe('user-1');
       expect(result.activatedAt).toBeInstanceOf(Date);
-      expect(mockPool.client.query).toHaveBeenCalledWith('BEGIN');
-      expect(mockPool.client.query).toHaveBeenCalledWith(
-        expect.stringContaining("SET status = 'active'"),
-        [result.activatedAt, 'user-1'],
-      );
-      expect(mockPool.client.query).toHaveBeenCalledWith(
-        expect.stringContaining('SET invalidated_at'),
-        [result.activatedAt, 'otp-1'],
-      );
-      expect(mockPool.client.query).toHaveBeenCalledWith('COMMIT');
+      expect(mockDb.transaction).toHaveBeenCalled();
+      expect(mockDb.prepare).toHaveBeenCalledWith(expect.stringContaining("SET status = 'active'"));
+      expect(mockDb.run).toHaveBeenCalledWith(result.activatedAt.toISOString(), 'user-1');
+      expect(mockDb.prepare).toHaveBeenCalledWith(expect.stringContaining('SET invalidated_at'));
+      expect(mockDb.run).toHaveBeenCalledWith(result.activatedAt.toISOString(), 'otp-1');
     });
 
     test('throws OtpNotFoundError when no active OTP exists', async () => {
@@ -236,7 +233,7 @@ describe('DefaultOtpService', () => {
       otpRequestRepository.findActiveByUserId.mockResolvedValue(null);
 
       await expect(service.verifyOtp('user-1', '654321')).rejects.toBeInstanceOf(OtpNotFoundError);
-      expect(mockPool.pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     test('throws OtpNotFoundError when the user does not exist or is not pending/active', async () => {
@@ -253,7 +250,7 @@ describe('DefaultOtpService', () => {
       );
 
       await expect(service.verifyOtp('user-1', '654321')).rejects.toBeInstanceOf(OtpExpiredError);
-      expect(mockPool.pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     test('throws OtpInvalidError when the code does not match', async () => {
@@ -261,7 +258,7 @@ describe('DefaultOtpService', () => {
       otpRequestRepository.findActiveByUserId.mockResolvedValue(buildOtpRequest());
 
       await expect(service.verifyOtp('user-1', '000000')).rejects.toBeInstanceOf(OtpInvalidError);
-      expect(mockPool.pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
   });
 });

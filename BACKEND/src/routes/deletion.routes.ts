@@ -21,7 +21,7 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { UserRepository } from '../repositories/user.repository';
 import { DeletionRequestRepository } from '../repositories/deletion-request.repository';
 import { EmailDeliveryPort } from '../adapters/email-delivery.port';
@@ -31,7 +31,7 @@ import { SessionService } from '../services/session.service';
 import { createSessionValidationMiddleware } from '../middleware/session-validation.middleware';
 
 export function createDeletionRouter(
-  pool: Pool,
+  db: Database,
   sessionService: SessionService,
   emailDeliveryPort: EmailDeliveryPort,
 ): Router {
@@ -39,10 +39,10 @@ export function createDeletionRouter(
 
   const controller = new DeletionController(
     new DefaultAccountDeletionService(
-      new UserRepository(pool),
-      new DeletionRequestRepository(pool),
+      new UserRepository(db),
+      new DeletionRequestRepository(db),
       emailDeliveryPort,
-      pool,
+      db,
     ),
   );
 

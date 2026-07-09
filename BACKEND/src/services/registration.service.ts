@@ -17,7 +17,9 @@
  */
 
 import bcrypt from 'bcrypt';
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
+import { withTransaction } from '../db/with-transaction';
 import { RegistrationRequestDto, UserCreatedResult } from '../types/registration.types';
 import { UsernameConflictError } from '../errors/registration.errors';
 import { appConfig } from '../config/app.config';
@@ -35,7 +37,7 @@ export interface RegistrationService {
 // ---------------------------------------------------------------------------
 
 export class DefaultRegistrationService implements RegistrationService {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   /**
    * Creates a new user in `pending` status. Account activation (OTP send)
@@ -45,7 +47,8 @@ export class DefaultRegistrationService implements RegistrationService {
    *              responsibility — see RegistrationController).
    * @returns    `UserCreatedResult` containing the new user's UUID and a
    *             human-readable confirmation message.
-   * @throws     Re-throws any pg / bcrypt errors after issuing ROLLBACK.
+   * @throws     Re-throws any SQLite / bcrypt errors after the transaction
+   *             auto-rolls-back.
    */
   async register(dto: RegistrationRequestDto): Promise<UserCreatedResult> {
     // -----------------------------------------------------------------------
@@ -58,47 +61,39 @@ export class DefaultRegistrationService implements RegistrationService {
     // -----------------------------------------------------------------------
     const usernameNormalised = dto.username.trim().toLowerCase();
     const now = new Date();
+    const userId = uuidv4();
 
-    const client: PoolClient = await this.pool.connect();
     try {
-      await client.query('BEGIN');
-
-      // --- INSERT user ---
-      const userResult = await client.query(
-        `INSERT INTO users (username, username_normalised, email, password_hash, status, registration_timestamp, activated_at)
-         VALUES ($1, $2, $3, $4, 'pending', $5, NULL)
-         RETURNING id`,
-        [dto.username, usernameNormalised, dto.emailAddress, passwordHash, now],
-      );
-      const userId: string = userResult.rows[0].id;
-
-      await client.query('COMMIT');
+      await withTransaction(this.db, () => {
+        this.db
+          .prepare(
+            `INSERT INTO users (id, username, username_normalised, email, password_hash, status, registration_timestamp, activated_at)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL)`,
+          )
+          .run(userId, dto.username, usernameNormalised, dto.emailAddress, passwordHash, now.toISOString());
+      });
 
       return {
         userId,
         message: 'Registration successful. Please check your email for the verification code to activate your account.',
       };
     } catch (err) {
-      await client.query('ROLLBACK');
-
       if (isUsernameConflictError(err)) {
         throw new UsernameConflictError(usernameNormalised);
       }
 
       throw err;
-    } finally {
-      client.release();
     }
   }
 }
 
-function isUsernameConflictError(err: unknown): err is { code: string; constraint?: string } {
+function isUsernameConflictError(err: unknown): err is { code: string; message: string } {
   return (
     typeof err === 'object' &&
     err !== null &&
     'code' in err &&
-    (err as { code: string }).code === '23505' &&
-    'constraint' in err &&
-    (err as { constraint?: string }).constraint === 'uidx_users_username_normalised'
+    (err as { code: string }).code === 'SQLITE_CONSTRAINT_UNIQUE' &&
+    'message' in err &&
+    (err as { message: string }).message.includes('users.username_normalised')
   );
 }

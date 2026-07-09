@@ -15,7 +15,7 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { UserRepository } from '../repositories/user.repository';
 import { PasswordRecoveryRequestRepository } from '../repositories/password-recovery-request.repository';
 import { DefaultPasswordPolicyEvaluator } from '../validators/password-policy.evaluator';
@@ -24,17 +24,17 @@ import { EmailDeliveryPort } from '../adapters/email-delivery.port';
 import { DefaultPasswordRecoveryService } from '../services/password-recovery.service';
 import { PasswordController } from '../controllers/password.controller';
 
-export function createPasswordRouter(pool: Pool, notificationPort: EmailDeliveryPort): Router {
+export function createPasswordRouter(db: Database, notificationPort: EmailDeliveryPort): Router {
   const router = Router();
 
   const controller = new PasswordController(
     new DefaultPasswordRecoveryService(
-      new UserRepository(pool),
-      new PasswordRecoveryRequestRepository(pool),
+      new UserRepository(db),
+      new PasswordRecoveryRequestRepository(db),
       new DefaultPasswordPolicyEvaluator(),
       new BcryptPasswordHasher(),
       notificationPort,
-      pool,
+      db,
     ),
   );
 

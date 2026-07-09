@@ -7,7 +7,7 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { UserRepository } from '../repositories/user.repository';
 import { SessionRepository } from '../repositories/session.repository';
 import { BcryptPasswordHasher } from '../services/password-hasher';
@@ -16,11 +16,11 @@ import { DefaultSessionService } from '../services/session.service';
 import { DefaultAuthService } from '../services/auth.service';
 import { AuthController } from '../controllers/auth.controller';
 
-export function createAuthRouter(pool: Pool): Router {
+export function createAuthRouter(db: Database): Router {
   const router = Router();
 
-  const userRepository = new UserRepository(pool);
-  const sessionRepository = new SessionRepository(pool);
+  const userRepository = new UserRepository(db);
+  const sessionRepository = new SessionRepository(db);
   const sessionService = new DefaultSessionService(sessionRepository, userRepository);
   const authService = new DefaultAuthService(
     userRepository,

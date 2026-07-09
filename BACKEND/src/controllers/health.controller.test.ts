@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { HealthController } from './health.controller';
 
 function buildResponse(): Response {
@@ -10,30 +10,32 @@ function buildResponse(): Response {
 }
 
 describe('HealthController', () => {
-  let query: jest.Mock;
-  let pool: Pool;
+  let get: jest.Mock;
+  let db: Database;
   let controller: HealthController;
 
   beforeEach(() => {
-    query = jest.fn();
-    pool = { query } as unknown as Pool;
-    controller = new HealthController(pool);
+    get = jest.fn();
+    db = { prepare: jest.fn().mockReturnValue({ get }) } as unknown as Database;
+    controller = new HealthController(db);
   });
 
   test('DB reachable -> 200 { status: "ok", db_reachable: true }', async () => {
-    query.mockResolvedValue({ rows: [{ '?column?': 1 }] });
+    get.mockReturnValue({ '1': 1 });
     const req = {} as Request;
     const res = buildResponse();
 
     await controller.check(req, res);
 
-    expect(query).toHaveBeenCalledWith('SELECT 1');
+    expect(db.prepare).toHaveBeenCalledWith('SELECT 1');
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ status: 'ok', db_reachable: true });
   });
 
   test('DB error -> still 200, db_reachable: false', async () => {
-    query.mockRejectedValue(new Error('connection refused'));
+    get.mockImplementation(() => {
+      throw new Error('connection refused');
+    });
     const req = {} as Request;
     const res = buildResponse();
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});

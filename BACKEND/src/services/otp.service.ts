@@ -20,7 +20,8 @@
  */
 
 import crypto from 'crypto';
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { withTransaction } from '../db/with-transaction';
 import { IUserRepository } from '../repositories/user.repository';
 import { IOtpRequestRepository } from '../repositories/otp-request.repository';
 import { RateLimitGuard } from './rate-limit.guard';
@@ -85,7 +86,7 @@ export class DefaultOtpService implements OtpService {
     private readonly otpRequestRepository: IOtpRequestRepository,
     private readonly rateLimitGuard: RateLimitGuard,
     private readonly otpDeliveryPort: OtpDeliveryPort,
-    private readonly pool: Pool,
+    private readonly db: Database,
   ) {}
 
   async sendOtp(userId: string): Promise<OtpDispatchResult> {
@@ -129,27 +130,15 @@ export class DefaultOtpService implements OtpService {
     }
 
     const activatedAt = new Date();
-    const client: PoolClient = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    await withTransaction(this.db, () => {
+      this.db
+        .prepare(`UPDATE users SET status = 'active', activated_at = ? WHERE id = ?`)
+        .run(activatedAt.toISOString(), userId);
 
-      await client.query(
-        `UPDATE users SET status = 'active', activated_at = $1 WHERE id = $2`,
-        [activatedAt, userId],
-      );
-
-      await client.query(
-        `UPDATE otp_requests SET invalidated_at = $1 WHERE id = $2`,
-        [activatedAt, request.id],
-      );
-
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+      this.db
+        .prepare(`UPDATE otp_requests SET invalidated_at = ? WHERE id = ?`)
+        .run(activatedAt.toISOString(), request.id);
+    });
 
     return { userId, activatedAt };
   }

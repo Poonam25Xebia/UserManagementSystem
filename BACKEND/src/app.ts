@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import swaggerUi from 'swagger-ui-express';
 import YAML from 'yamljs';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { Redis } from 'ioredis';
 import { createRegistrationRouter } from './routes/registration.routes';
 import { createActivationRouter } from './routes/activation.routes';
@@ -164,7 +164,7 @@ function createAppErrorHandler(
 }
 
 export function createApp(
-  pool: Pool,
+  db: Database,
   redis: Redis,
   otpDeliveryPort: OtpDeliveryPort,
   emailDeliveryPort: EmailDeliveryPort,
@@ -179,16 +179,16 @@ export function createApp(
 
   app.use(express.json());
 
-  app.use('/api/v1/users', createRegistrationRouter(pool, redis, otpDeliveryPort));
-  app.use('/api/v1/users', createActivationRouter(pool));
-  app.use('/api/v1/admin', createAdminRouter(pool));
-  app.use('/api/v1/otp', createOtpRouter(pool, redis, otpDeliveryPort));
+  app.use('/api/v1/users', createRegistrationRouter(db, redis, otpDeliveryPort));
+  app.use('/api/v1/users', createActivationRouter(db));
+  app.use('/api/v1/admin', createAdminRouter(db));
+  app.use('/api/v1/otp', createOtpRouter(db, redis, otpDeliveryPort));
 
   // F-03: User Login — /login, /logout, /password-recovery, /password-reset
   // are all pre-auth by nature (the credential/token IS the auth mechanism),
   // so no SessionValidationMiddleware is applied to this router.
-  app.use('/api/v1/auth', createAuthRouter(pool));
-  app.use('/api/v1/auth', createPasswordRouter(pool, emailDeliveryPort));
+  app.use('/api/v1/auth', createAuthRouter(db));
+  app.use('/api/v1/auth', createPasswordRouter(db, emailDeliveryPort));
 
   // F-04: Account Deletion — the first consumer of SessionValidationMiddleware
   // as the cross-cutting guard it was built to be (US-038 A-003). All three
@@ -196,17 +196,17 @@ export function createApp(
   // code is checked against the caller's own pending request, not looked up
   // as a global unauthenticated credential.
   const sharedSessionService = new DefaultSessionService(
-    new SessionRepository(pool),
-    new UserRepository(pool),
+    new SessionRepository(db),
+    new UserRepository(db),
   );
-  app.use('/api/v1/users', createDeletionRouter(pool, sharedSessionService, emailDeliveryPort));
+  app.use('/api/v1/users', createDeletionRouter(db, sharedSessionService, emailDeliveryPort));
 
   // GET /api/v1/users/me — the calling user's own profile, reusing the same
   // session-validation guard as the deletion-request routes above.
-  app.use('/api/v1/users', createUserProfileRouter(pool, sharedSessionService));
+  app.use('/api/v1/users', createUserProfileRouter(db, sharedSessionService));
 
   // /health is intentionally unauthenticated (API Gateway probing).
-  app.use(createHealthRouter(pool));
+  app.use(createHealthRouter(db));
 
   // Swagger UI — serves DOCS/openapi.yaml, generated from the routes/controllers
   // themselves (see DOCS/PROJECT_ANALYSIS.md Phase 9). Unauthenticated, matching
