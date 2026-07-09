@@ -21,4 +21,4 @@ export const router = createBrowserRouter([
       { path: "/delete-account",    Component: AccountDeletionTemplate  },
     ],
   },
-]);
+], { basename: "/app10" });
