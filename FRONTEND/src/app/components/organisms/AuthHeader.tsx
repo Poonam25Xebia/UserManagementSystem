@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, Link } from "react-router";
 import { LogOut, User, ChevronDown } from "lucide-react";
 import { Logo } from "../atoms/Logo";
 import { logoutUser } from "../../lib/api-client";
@@ -58,16 +58,16 @@ export function AuthHeader({ userName = "Jane Smith", userEmail = "jane@example.
             { label: "Dashboard", href: "/dashboard"         },
             { label: "Account",   href: "/account-dashboard" },
           ].map((item) => (
-            <a
+            <Link
               key={item.label}
-              href={item.href}
+              to={item.href}
               className="text-sm font-medium transition-colors duration-200 hover:underline underline-offset-2"
               style={{ color: "#1A73E8" }}
               onMouseEnter={(e) => ((e.target as HTMLAnchorElement).style.color = "#1557B0")}
               onMouseLeave={(e) => ((e.target as HTMLAnchorElement).style.color = "#1A73E8")}
             >
               {item.label}
-            </a>
+            </Link>
           ))}
         </nav>
 

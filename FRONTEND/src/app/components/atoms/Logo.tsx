@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import { Layers } from "lucide-react";
 
 interface LogoProps {
@@ -18,8 +19,8 @@ export function Logo({ variant = "dark", size = "md", href = "/" }: LogoProps) {
   const textColor = variant === "light" ? "#FFFFFF" : "#212121";
 
   return (
-    <a
-      href={href}
+    <Link
+      to={href}
       className="inline-flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(26,115,232,0.4)] rounded-sm"
       aria-label="AuthFlow — go to homepage"
       style={{ textDecoration: "none" }}
@@ -34,6 +35,6 @@ export function Logo({ variant = "dark", size = "md", href = "/" }: LogoProps) {
       <span style={{ ...textStyles[size], color: textColor, letterSpacing: "-0.25px" }}>
         AuthFlow
       </span>
-    </a>
+    </Link>
   );
 }
