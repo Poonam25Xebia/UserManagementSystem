@@ -1,6 +1,7 @@
 import 'dotenv/config';
-import { Pool } from 'pg';
 import { Redis } from 'ioredis';
+import { createDb } from './db/connection';
+import { runMigrations } from './db/migrate';
 import { createApp } from './app';
 import { EmailRecordRepository } from './repositories/email-record.repository';
 import { TokenRepository } from './repositories/token.repository';
@@ -12,15 +13,17 @@ import { OutboxWorker } from './workers/outbox.worker';
 import { AccountDeletionNotificationWorker } from './workers/account-deletion-notification.worker';
 import { otpConfig } from './config/otp.config';
 
-const pool = new Pool();
+const db = createDb();
+runMigrations(db);
+
 const otpRedisClient = new Redis(otpConfig.redisUrl);
 const emailDeliveryPort = new SendGridEmailAdapter();
 const otpDeliveryPort = new EmailOtpDeliveryAdapter(emailDeliveryPort);
-const app = createApp(pool, otpRedisClient, otpDeliveryPort, emailDeliveryPort);
+const app = createApp(db, otpRedisClient, otpDeliveryPort, emailDeliveryPort);
 
-const emailRecordRepository = new EmailRecordRepository(pool);
-const tokenRepository = new TokenRepository(pool);
-const userRepository = new UserRepository(pool);
+const emailRecordRepository = new EmailRecordRepository(db);
+const tokenRepository = new TokenRepository(db);
+const userRepository = new UserRepository(db);
 const outboxWorker = new OutboxWorker(
   emailRecordRepository,
   tokenRepository,
@@ -28,7 +31,7 @@ const outboxWorker = new OutboxWorker(
   emailDeliveryPort,
 );
 
-const deletionNotificationRecordRepository = new DeletionNotificationRecordRepository(pool);
+const deletionNotificationRecordRepository = new DeletionNotificationRecordRepository(db);
 const accountDeletionNotificationWorker = new AccountDeletionNotificationWorker(
   deletionNotificationRecordRepository,
   emailDeliveryPort,
@@ -47,7 +50,8 @@ function shutdown(): void {
   outboxWorker.stop();
   accountDeletionNotificationWorker.stop();
   server.close(() => {
-    Promise.all([pool.end(), otpRedisClient.quit()]).then(() => {
+    db.close();
+    otpRedisClient.quit().then(() => {
       console.log('Shutdown complete.');
       process.exit(0);
     });

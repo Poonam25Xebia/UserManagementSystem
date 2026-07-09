@@ -2,12 +2,13 @@
  * password-recovery-request.repository.ts
  *
  * Repository for the `password_recovery_requests` table.  All queries use
- * parameterised `pg` placeholders — no string interpolation.
+ * parameterised `?` placeholders — no string interpolation.
  *
  * Requirements: US-036 FR-012, FR-015–016
  */
 
-import { Pool, QueryResult } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import { PasswordRecoveryRequestEntity } from '../types/login.types';
 
 // ---------------------------------------------------------------------------
@@ -26,17 +27,17 @@ export interface IPasswordRecoveryRequestRepository {
 }
 
 // ---------------------------------------------------------------------------
-// Row type returned by pg
+// Row type returned by better-sqlite3
 // ---------------------------------------------------------------------------
 
 interface PasswordRecoveryRequestRow {
   id: string;
   user_id: string;
   token: string;
-  requested_at: Date;
-  expires_at: Date;
-  consumed: boolean;
-  consumed_at: Date | null;
+  requested_at: string;
+  expires_at: string;
+  consumed: number;
+  consumed_at: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,10 +49,10 @@ function rowToEntity(row: PasswordRecoveryRequestRow): PasswordRecoveryRequestEn
     id: row.id,
     userId: row.user_id,
     token: row.token,
-    requestedAt: row.requested_at,
-    expiresAt: row.expires_at,
-    consumed: row.consumed,
-    consumedAt: row.consumed_at,
+    requestedAt: new Date(row.requested_at),
+    expiresAt: new Date(row.expires_at),
+    consumed: row.consumed === 1,
+    consumedAt: row.consumed_at === null ? null : new Date(row.consumed_at),
   };
 }
 
@@ -62,7 +63,7 @@ function rowToEntity(row: PasswordRecoveryRequestRow): PasswordRecoveryRequestEn
 export class PasswordRecoveryRequestRepository
   implements IPasswordRecoveryRequestRepository
 {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   /**
    * Insert a new password-recovery request and return the persisted entity
@@ -74,21 +75,19 @@ export class PasswordRecoveryRequestRepository
     requestedAt: Date,
     expiresAt: Date,
   ): Promise<PasswordRecoveryRequestEntity> {
-    const sql = `
-      INSERT INTO password_recovery_requests
-        (user_id, token, requested_at, expires_at, consumed, consumed_at)
-      VALUES ($1, $2, $3, $4, FALSE, NULL)
-      RETURNING *
-    `;
+    const id = uuidv4();
+    this.db
+      .prepare(
+        `INSERT INTO password_recovery_requests
+          (id, user_id, token, requested_at, expires_at, consumed, consumed_at)
+         VALUES (?, ?, ?, ?, ?, 0, NULL)`,
+      )
+      .run(id, userId, token, requestedAt.toISOString(), expiresAt.toISOString());
 
-    const result: QueryResult<PasswordRecoveryRequestRow> = await this.pool.query(sql, [
-      userId,
-      token,
-      requestedAt,
-      expiresAt,
-    ]);
-
-    return rowToEntity(result.rows[0]);
+    const row = this.db
+      .prepare('SELECT * FROM password_recovery_requests WHERE id = ?')
+      .get(id) as PasswordRecoveryRequestRow;
+    return rowToEntity(row);
   }
 
   /**
@@ -96,33 +95,19 @@ export class PasswordRecoveryRequestRepository
    * Returns null if no match is found.
    */
   async findByToken(token: string): Promise<PasswordRecoveryRequestEntity | null> {
-    const sql = `
-      SELECT * FROM password_recovery_requests
-      WHERE token = $1
-      LIMIT 1
-    `;
+    const row = this.db
+      .prepare('SELECT * FROM password_recovery_requests WHERE token = ? LIMIT 1')
+      .get(token) as PasswordRecoveryRequestRow | undefined;
 
-    const result: QueryResult<PasswordRecoveryRequestRow> = await this.pool.query(sql, [
-      token,
-    ]);
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    return rowToEntity(result.rows[0]);
+    return row === undefined ? null : rowToEntity(row);
   }
 
   /**
    * Mark a recovery request as consumed after a successful password reset.
    */
   async markConsumed(id: string, consumedAt: Date): Promise<void> {
-    const sql = `
-      UPDATE password_recovery_requests
-      SET consumed = TRUE, consumed_at = $1
-      WHERE id = $2
-    `;
-
-    await this.pool.query(sql, [consumedAt, id]);
+    this.db
+      .prepare('UPDATE password_recovery_requests SET consumed = 1, consumed_at = ? WHERE id = ?')
+      .run(consumedAt.toISOString(), id);
   }
 }

@@ -11,7 +11,7 @@ process.env.ACCOUNT_DELETION_NOTICE_EMAIL_TEMPLATE_ID = 'd-test-deletion-notice-
 
 import request from 'supertest';
 import express, { Request, Response } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { Redis } from 'ioredis';
 import { OtpDeliveryPort } from '../adapters/otp-delivery.port';
 import { EmailDeliveryPort } from '../adapters/email-delivery.port';
@@ -22,6 +22,7 @@ import { DefaultSessionService } from '../services/session.service';
 import { createSessionValidationMiddleware } from '../middleware/session-validation.middleware';
 import { DeletionNotificationRecordRepository } from '../repositories/deletion-notification-record.repository';
 import { AccountDeletionNotificationWorker } from '../workers/account-deletion-notification.worker';
+import { createTestDb, clearAllTables, closeTestDb, TestDb } from './test-db';
 
 const TEST_PASSWORD = 'Passw0rd!';
 
@@ -57,99 +58,10 @@ class RecordingEmailDeliveryPort implements EmailDeliveryPort {
 }
 
 let app: any;
-let pool: Pool;
+let testDb: TestDb;
+let db: Database;
 let otpRedisClient: Redis;
 let emailDeliveryPort: RecordingEmailDeliveryPort;
-
-async function ensureDatabaseSchema(pool: Pool): Promise<void> {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      username VARCHAR(255) NOT NULL,
-      username_normalised VARCHAR(255) NOT NULL,
-      email VARCHAR(320) NOT NULL,
-      password_hash VARCHAR(72) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'suspended', 'deleted')),
-      registration_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      activated_at TIMESTAMPTZ NULL,
-      failed_login_count SMALLINT NOT NULL DEFAULT 0,
-      locked_until TIMESTAMPTZ NULL,
-      last_login_at TIMESTAMPTZ NULL,
-      deleted_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS activation_tokens (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-      token_value VARCHAR(128) NOT NULL,
-      issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      consumed BOOLEAN NOT NULL DEFAULT FALSE,
-      consumed_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS registration_email_records (
-      record_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-      recipient_address VARCHAR(320) NOT NULL,
-      dispatch_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      delivery_status VARCHAR(10) NOT NULL DEFAULT 'queued' CHECK (delivery_status IN ('queued', 'sent', 'failed')),
-      retry_count SMALLINT NOT NULL DEFAULT 0,
-      activation_token_id UUID REFERENCES activation_tokens(id) ON DELETE SET NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token_hash VARCHAR(64) NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      invalidated BOOLEAN NOT NULL DEFAULT FALSE,
-      invalidated_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS account_deletion_requests (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      code_hash VARCHAR(64) NOT NULL,
-      issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      status VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'cancelled')),
-      confirmed_at TIMESTAMPTZ NULL,
-      cancelled_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS account_deletion_notification_records (
-      record_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL,
-      recipient_address VARCHAR(320) NOT NULL,
-      deletion_date TIMESTAMPTZ NOT NULL,
-      dispatch_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      delivery_status VARCHAR(10) NOT NULL DEFAULT 'queued' CHECK (delivery_status IN ('queued', 'sent', 'failed')),
-      retry_count SMALLINT NOT NULL DEFAULT 0
-    )
-  `);
-
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_users_username_normalised ON users(username_normalised)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_users_email ON users(email)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_activation_tokens_token_value ON activation_tokens(token_value)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_sessions_token_hash ON sessions(token_hash)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_account_deletion_requests_user_status ON account_deletion_requests(user_id, status)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_deletion_notification_status ON account_deletion_notification_records(delivery_status)`);
-}
 
 /**
  * The plaintext OTP code is never persisted (only its hash is), so tests
@@ -186,11 +98,10 @@ async function registerAndActivateUser(
     .expect(201);
   const userId = registerResponse.body.userId;
 
-  const tokenResult = await pool.query(
-    'SELECT token_value FROM activation_tokens WHERE user_id = $1',
-    [userId],
-  );
-  const tokenValue = tokenResult.rows[0].token_value;
+  const tokenRow = db
+    .prepare('SELECT token_value FROM activation_tokens WHERE user_id = ?')
+    .get(userId) as { token_value: string };
+  const tokenValue = tokenRow.token_value;
 
   await request(app).post('/api/v1/users/activate').send({ token: tokenValue }).expect(200);
 
@@ -206,31 +117,22 @@ async function registerActivateAndLogin(
   return { userId, email, password, sessionToken: loginResponse.body.token };
 }
 
-async function clearTables(): Promise<void> {
-  await pool.query('DELETE FROM account_deletion_notification_records');
-  await pool.query('DELETE FROM account_deletion_requests');
-  await pool.query('DELETE FROM sessions');
-  await pool.query('DELETE FROM registration_email_records');
-  await pool.query('DELETE FROM activation_tokens');
-  await pool.query('DELETE FROM users');
-}
-
 beforeAll(async () => {
-  pool = new Pool();
+  testDb = createTestDb();
+  db = testDb.db;
   otpRedisClient = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
   emailDeliveryPort = new RecordingEmailDeliveryPort();
-  await ensureDatabaseSchema(pool);
   const appModule = await import('../app');
-  app = appModule.createApp(pool, otpRedisClient, new NoopOtpDeliveryPort(), emailDeliveryPort);
+  app = appModule.createApp(db, otpRedisClient, new NoopOtpDeliveryPort(), emailDeliveryPort);
 });
 
 afterEach(async () => {
   emailDeliveryPort.dispatched = [];
-  await clearTables();
+  clearAllTables(db);
 });
 
 afterAll(async () => {
-  await pool.end();
+  closeTestDb(testDb);
   await otpRedisClient.quit();
 });
 
@@ -248,12 +150,10 @@ describe('Integration | Account deletion happy path', () => {
       .expect(202);
     expect(requestResponse.body).toHaveProperty('message');
 
-    const requestRow = await pool.query(
-      'SELECT status FROM account_deletion_requests WHERE user_id = $1',
-      [userId],
-    );
-    expect(requestRow.rowCount).toBe(1);
-    expect(requestRow.rows[0].status).toBe('pending');
+    const requestRow = db
+      .prepare('SELECT status FROM account_deletion_requests WHERE user_id = ?')
+      .get(userId) as { status: string };
+    expect(requestRow.status).toBe('pending');
     const code = lastDispatchedCode();
 
     const confirmResponse = await request(app)
@@ -264,29 +164,32 @@ describe('Integration | Account deletion happy path', () => {
     expect(confirmResponse.body.userId).toBe(userId);
     expect(confirmResponse.body).toHaveProperty('deletedAt');
 
-    const userRow = await pool.query(
-      'SELECT status, deleted_at, email, username, username_normalised FROM users WHERE id = $1',
-      [userId],
-    );
-    expect(userRow.rows[0].status).toBe('deleted');
-    expect(userRow.rows[0].deleted_at).not.toBeNull();
-    expect(userRow.rows[0].email).toBe(`deleted-${userId}@deleted.invalid`);
-    expect(userRow.rows[0].username).toBe(`deleted-user-${userId}`);
-    expect(userRow.rows[0].username_normalised).toBe(`deleted-user-${userId}`.toLowerCase());
+    const userRow = db
+      .prepare('SELECT status, deleted_at, email, username, username_normalised FROM users WHERE id = ?')
+      .get(userId) as {
+        status: string;
+        deleted_at: string | null;
+        email: string;
+        username: string;
+        username_normalised: string;
+      };
+    expect(userRow.status).toBe('deleted');
+    expect(userRow.deleted_at).not.toBeNull();
+    expect(userRow.email).toBe(`deleted-${userId}@deleted.invalid`);
+    expect(userRow.username).toBe(`deleted-user-${userId}`);
+    expect(userRow.username_normalised).toBe(`deleted-user-${userId}`.toLowerCase());
 
-    const confirmedRequestRow = await pool.query(
-      'SELECT status, confirmed_at FROM account_deletion_requests WHERE user_id = $1',
-      [userId],
-    );
-    expect(confirmedRequestRow.rows[0].status).toBe('confirmed');
-    expect(confirmedRequestRow.rows[0].confirmed_at).not.toBeNull();
+    const confirmedRequestRow = db
+      .prepare('SELECT status, confirmed_at FROM account_deletion_requests WHERE user_id = ?')
+      .get(userId) as { status: string; confirmed_at: string | null };
+    expect(confirmedRequestRow.status).toBe('confirmed');
+    expect(confirmedRequestRow.confirmed_at).not.toBeNull();
 
-    const notificationRow = await pool.query(
-      'SELECT recipient_address, delivery_status FROM account_deletion_notification_records WHERE user_id = $1',
-      [userId],
-    );
-    expect(notificationRow.rowCount).toBe(1);
-    expect(notificationRow.rows[0].delivery_status).toBe('queued');
+    const notificationRow = db
+      .prepare('SELECT recipient_address, delivery_status FROM account_deletion_notification_records WHERE user_id = ?')
+      .get(userId) as { recipient_address: string; delivery_status: string };
+    expect(notificationRow).toBeDefined();
+    expect(notificationRow.delivery_status).toBe('queued');
   });
 });
 
@@ -323,10 +226,12 @@ describe('Integration | Session invalidation on deletion', () => {
 
     expect(response.body.error_code).toBe('SESSION_INVALIDATED');
 
-    const sessionRows = await pool.query('SELECT invalidated FROM sessions WHERE user_id = $1', [userId]);
-    expect(sessionRows.rowCount).toBeGreaterThan(0);
-    for (const row of sessionRows.rows) {
-      expect(row.invalidated).toBe(true);
+    const sessionRows = db
+      .prepare('SELECT invalidated FROM sessions WHERE user_id = ?')
+      .all(userId) as Array<{ invalidated: number }>;
+    expect(sessionRows.length).toBeGreaterThan(0);
+    for (const row of sessionRows) {
+      expect(row.invalidated).toBe(1);
     }
   });
 
@@ -339,7 +244,10 @@ describe('Integration | Session invalidation on deletion', () => {
     // false and only the broadened `status !== 'active'` check can catch it.
     const loginResponse = await request(app).post('/api/v1/auth/login').send({ email, password }).expect(200);
     const sessionToken = loginResponse.body.token;
-    await pool.query(`UPDATE users SET status = 'deleted', deleted_at = NOW() WHERE id = $1`, [userId]);
+    db.prepare("UPDATE users SET status = 'deleted', deleted_at = ? WHERE id = ?").run(
+      new Date().toISOString(),
+      userId,
+    );
 
     const { app: protectedApp } = buildProtectedTestApp();
     const response = await request(protectedApp)
@@ -349,9 +257,11 @@ describe('Integration | Session invalidation on deletion', () => {
 
     expect(response.body.error_code).toBe('AUTH_ACCOUNT_NOT_ACTIVE');
 
-    const sessionRows = await pool.query('SELECT invalidated FROM sessions WHERE user_id = $1', [userId]);
-    for (const row of sessionRows.rows) {
-      expect(row.invalidated).toBe(true);
+    const sessionRows = db
+      .prepare('SELECT invalidated FROM sessions WHERE user_id = ?')
+      .all(userId) as Array<{ invalidated: number }>;
+    for (const row of sessionRows) {
+      expect(row.invalidated).toBe(1);
     }
   });
 });
@@ -363,8 +273,8 @@ describe('Integration | Session invalidation on deletion', () => {
  * is mounted in the main app.
  */
 function buildProtectedTestApp() {
-  const userRepository = new UserRepository(pool);
-  const sessionRepository = new SessionRepository(pool);
+  const userRepository = new UserRepository(db);
+  const sessionRepository = new SessionRepository(db);
   const sessionService = new DefaultSessionService(sessionRepository, userRepository);
   const middleware = createSessionValidationMiddleware(sessionService);
 
@@ -397,11 +307,10 @@ describe('Integration | Cancellation, expiry, and conflict paths', () => {
       .set('Authorization', `Bearer ${sessionToken}`)
       .expect(200);
 
-    const cancelledRow = await pool.query(
-      'SELECT status FROM account_deletion_requests WHERE user_id = $1',
-      [userId],
-    );
-    expect(cancelledRow.rows[0].status).toBe('cancelled');
+    const cancelledRow = db
+      .prepare('SELECT status FROM account_deletion_requests WHERE user_id = ?')
+      .get(userId) as { status: string };
+    expect(cancelledRow.status).toBe('cancelled');
 
     const confirmResponse = await request(app)
       .post('/api/v1/users/deletion-requests/confirm')
@@ -410,8 +319,8 @@ describe('Integration | Cancellation, expiry, and conflict paths', () => {
       .expect(404);
     expect(confirmResponse.body.error_code).toBe('DELETION_REQUEST_NOT_FOUND');
 
-    const userRow = await pool.query('SELECT status FROM users WHERE id = $1', [userId]);
-    expect(userRow.rows[0].status).toBe('active');
+    const userRow = db.prepare('SELECT status FROM users WHERE id = ?').get(userId) as { status: string };
+    expect(userRow.status).toBe('active');
   });
 
   test('requesting deletion twice without cancelling returns 409 on the second request', async () => {
@@ -449,13 +358,12 @@ describe('Integration | Cancellation, expiry, and conflict paths', () => {
 
     const code = lastDispatchedCode();
 
-    const requestRow = await pool.query(
-      'SELECT id FROM account_deletion_requests WHERE user_id = $1',
-      [userId],
-    );
-    await pool.query(
-      `UPDATE account_deletion_requests SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1`,
-      [requestRow.rows[0].id],
+    const requestRow = db
+      .prepare('SELECT id FROM account_deletion_requests WHERE user_id = ?')
+      .get(userId) as { id: string };
+    db.prepare('UPDATE account_deletion_requests SET expires_at = ? WHERE id = ?').run(
+      new Date(Date.now() - 1000).toISOString(),
+      requestRow.id,
     );
 
     const response = await request(app)
@@ -517,16 +425,15 @@ describe('Integration | Post-deletion notification worker', () => {
 
     emailDeliveryPort.dispatched = []; // clear the (already-tested) request-confirmation dispatch
 
-    const notificationRecordRepository = new DeletionNotificationRecordRepository(pool);
+    const notificationRecordRepository = new DeletionNotificationRecordRepository(db);
     const worker = new AccountDeletionNotificationWorker(notificationRecordRepository, emailDeliveryPort);
     await worker.processQueuedRecords();
 
-    const recordRow = await pool.query(
-      'SELECT delivery_status, recipient_address FROM account_deletion_notification_records WHERE user_id = $1',
-      [userId],
-    );
-    expect(recordRow.rows[0].delivery_status).toBe('sent');
-    expect(recordRow.rows[0].recipient_address).toBe(email);
+    const recordRow = db
+      .prepare('SELECT delivery_status, recipient_address FROM account_deletion_notification_records WHERE user_id = ?')
+      .get(userId) as { delivery_status: string; recipient_address: string };
+    expect(recordRow.delivery_status).toBe('sent');
+    expect(recordRow.recipient_address).toBe(email);
 
     expect(emailDeliveryPort.dispatched).toHaveLength(1);
     expect(emailDeliveryPort.dispatched[0].recipient.address).toBe(email);

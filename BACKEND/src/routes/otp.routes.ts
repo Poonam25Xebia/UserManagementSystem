@@ -14,7 +14,7 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { Redis } from 'ioredis';
 import { UserRepository } from '../repositories/user.repository';
 import { OtpRequestRepository } from '../repositories/otp-request.repository';
@@ -23,16 +23,16 @@ import { DefaultOtpService } from '../services/otp.service';
 import { OtpDeliveryPort } from '../adapters/otp-delivery.port';
 import { OtpController } from '../controllers/otp.controller';
 
-export function createOtpRouter(pool: Pool, redis: Redis, otpDeliveryPort: OtpDeliveryPort): Router {
+export function createOtpRouter(db: Database, redis: Redis, otpDeliveryPort: OtpDeliveryPort): Router {
   const router = Router();
 
   const controller = new OtpController(
     new DefaultOtpService(
-      new UserRepository(pool),
-      new OtpRequestRepository(pool),
+      new UserRepository(db),
+      new OtpRequestRepository(db),
       new RedisRateLimitGuard(redis),
       otpDeliveryPort,
-      pool,
+      db,
     ),
   );
 

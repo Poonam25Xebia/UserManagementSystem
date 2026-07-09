@@ -15,7 +15,8 @@
  * transaction + the consumed flag.
  */
 
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { withTransaction } from '../db/with-transaction';
 import { ActivationResult } from '../types/registration.types';
 import { ITokenRepository } from '../repositories/token.repository';
 import { IUserRepository } from '../repositories/user.repository';
@@ -42,7 +43,7 @@ export class DefaultActivationService implements ActivationService {
   constructor(
     private readonly tokenRepository: ITokenRepository,
     private readonly userRepository: IUserRepository,
-    private readonly pool: Pool,
+    private readonly db: Database,
   ) {}
 
   /**
@@ -81,31 +82,15 @@ export class DefaultActivationService implements ActivationService {
 
     // --- Step 5: Atomic UPDATE — user status + token consumed (FR-010–011) ---
     const activatedAt = new Date();
-    const client: PoolClient = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    await withTransaction(this.db, () => {
+      this.db
+        .prepare(`UPDATE users SET status = 'active', activated_at = ? WHERE id = ?`)
+        .run(activatedAt.toISOString(), user.id);
 
-      await client.query(
-        `UPDATE users
-         SET status = 'active', activated_at = $1
-         WHERE id = $2`,
-        [activatedAt, user.id],
-      );
-
-      await client.query(
-        `UPDATE activation_tokens
-         SET consumed = true, consumed_at = $1
-         WHERE id = $2`,
-        [activatedAt, token.id],
-      );
-
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+      this.db
+        .prepare(`UPDATE activation_tokens SET consumed = 1, consumed_at = ? WHERE id = ?`)
+        .run(activatedAt.toISOString(), token.id);
+    });
 
     // --- Return result (FR-012, FR-015) ---
     return { userId: user.id, activatedAt };

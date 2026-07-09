@@ -1,5 +1,7 @@
 # Local Readiness Report — User Management Service
 
+_This report predates the PostgreSQL → SQLite migration and is kept as a historical record of that verification pass (Postgres/WSL setup details below no longer apply — the backend now persists to a local SQLite file, see `DOCS/RUN_APPLICATION.md`)._
+
 **Verdict: (A) Backend is fully running and ready for frontend integration.**
 
 All 4 features (F-01 Registration, F-02 OTP, F-03 Login, F-04 Account Deletion) are implemented, wired, and verified end-to-end against a live Postgres + Redis instance. One real bug was found and fixed during verification (account-deletion confirmation was unconditionally returning 500). CORS was added since none existed and it would have hard-blocked frontend integration.

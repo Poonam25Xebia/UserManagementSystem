@@ -56,23 +56,23 @@ db/
 
 ## Startup Architecture
 
-1. `server.ts` constructs a single shared `pg.Pool()` (env-var driven, no explicit config object) and a single `ioredis` client (`otpConfig.redisUrl`).
+1. `server.ts` opens a single shared SQLite database (`better-sqlite3`, `DATABASE_PATH` env var, auto-creating the file/folder if missing) and runs any pending migrations, plus a single `ioredis` client (`otpConfig.redisUrl`).
 2. Adapters are instantiated once: `SendGridEmailAdapter` (email) → wrapped by `EmailOtpDeliveryAdapter` (OTP-over-email).
-3. `createApp(pool, redis, otpDeliveryPort, emailDeliveryPort)` builds the Express app: each feature's router factory (`createXRouter(...)`) hand-wires its own repositories → services → controller and returns a `Router`. All 8 routers + a 404 handler + a single centralized error handler are mounted (see `docs/API_REFERENCE.md` for the full route table).
+3. `createApp(db, redis, otpDeliveryPort, emailDeliveryPort)` builds the Express app: each feature's router factory (`createXRouter(...)`) hand-wires its own repositories → services → controller and returns a `Router`. All 8 routers + a 404 handler + a single centralized error handler are mounted (see `docs/API_REFERENCE.md` for the full route table).
 4. Two background workers (`OutboxWorker`, `AccountDeletionNotificationWorker`) are constructed directly in `server.ts` (not inside `createApp`) and `.start()`ed via `setInterval` polling after the app is built.
 5. `app.listen(port)` starts the HTTP server.
-6. `SIGINT`/`SIGTERM` trigger `shutdown()`: stop both workers → close HTTP server → close Pool + Redis → `process.exit(0)`.
+6. `SIGINT`/`SIGTERM` trigger `shutdown()`: stop both workers → close HTTP server → close the SQLite handle + Redis → `process.exit(0)`.
 
-There is **no Docker Compose** — Postgres and Redis must be started/available independently before `npm start`.
+There is **no Docker Compose** — Redis must be started/available independently before `npm start`; SQLite is file-based and requires no separate service.
 
 ## Dependency Graph (high level)
 
 ```
 server.ts
- ├─ pg.Pool (env vars)
+ ├─ better-sqlite3 Database (DATABASE_PATH env var)
  ├─ ioredis.Redis (otpConfig.redisUrl)
  ├─ SendGridEmailAdapter → EmailOtpDeliveryAdapter
- ├─ createApp(pool, redis, otpDeliveryPort, emailDeliveryPort)
+ ├─ createApp(db, redis, otpDeliveryPort, emailDeliveryPort)
  │    ├─ registration.routes  → RegistrationController → RegistrationService → UserRepository, validators
  │    ├─ activation.routes    → ActivationController → ActivationService → TokenRepository, UserRepository
  │    ├─ admin.routes         → AdminController → EmailDispatchService (admin-auth middleware)
@@ -80,16 +80,15 @@ server.ts
  │    ├─ auth.routes          → AuthController → AuthService → UserRepository, PasswordHasher, LoginGuard, SessionService
  │    ├─ password.routes      → PasswordController → PasswordRecoveryService → PasswordRecoveryRequestRepository, EmailDeliveryPort
  │    ├─ deletion.routes      → DeletionController → AccountDeletionService → DeletionRequestRepository, UserRepository, SessionService (session-validation middleware)
- │    └─ health.routes        → HealthController → pool.query('SELECT 1')
+ │    └─ health.routes        → HealthController → db.prepare('SELECT 1').get()
  ├─ OutboxWorker (EmailRecordRepository, TokenRepository, UserRepository, EmailDeliveryPort)
  └─ AccountDeletionNotificationWorker (DeletionNotificationRecordRepository, EmailDeliveryPort)
 ```
 
 ## Missing Components (gaps observed, not defects)
 
-- No Docker/Docker Compose — must run Postgres/Redis manually or via locally-installed services.
+- No Docker/Docker Compose — must run Redis manually or via a locally-installed service; SQLite needs nothing extra.
 - No Swagger/OpenAPI spec (generated in Phase 9, see `docs/openapi.yaml`).
-- No migration tracking table — `db:migrate` is not idempotent (re-running fails on `CREATE TABLE` collisions). See `docs/RUN_APPLICATION.md` for safe usage.
 - No request logging middleware, no CORS, no Helmet, no global HTTP rate limiting (only OTP has Redis-backed rate limiting at the service layer).
 - No centralized `AppError` base class — 17 manually-enumerated `instanceof` branches in `src/app.ts`'s error handler.
 - `DefaultSessionService` is instantiated twice (once in `auth.routes.ts`, once in `app.ts` for the deletion router) rather than shared as a singleton — functionally harmless (both are stateless, DB-backed) but worth knowing during frontend/session debugging.

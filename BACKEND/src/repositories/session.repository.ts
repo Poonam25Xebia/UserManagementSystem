@@ -1,13 +1,14 @@
 /**
  * session.repository.ts
  *
- * Repository for the `sessions` table.  All queries use parameterised `pg`
+ * Repository for the `sessions` table.  All queries use parameterised `?`
  * placeholders — no string interpolation.
  *
  * Requirements: US-038 FR-001–002, FR-004–006, FR-008
  */
 
-import { Pool, QueryResult } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import { SessionEntity } from '../types/login.types';
 
 // ---------------------------------------------------------------------------
@@ -28,17 +29,17 @@ export interface ISessionRepository {
 }
 
 // ---------------------------------------------------------------------------
-// Row type returned by pg
+// Row type returned by better-sqlite3
 // ---------------------------------------------------------------------------
 
 interface SessionRow {
   id: string;
   user_id: string;
   token_hash: string;
-  created_at: Date;
-  expires_at: Date;
-  invalidated: boolean;
-  invalidated_at: Date | null;
+  created_at: string;
+  expires_at: string;
+  invalidated: number;
+  invalidated_at: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -50,10 +51,10 @@ function rowToEntity(row: SessionRow): SessionEntity {
     id: row.id,
     userId: row.user_id,
     tokenHash: row.token_hash,
-    createdAt: row.created_at,
-    expiresAt: row.expires_at,
-    invalidated: row.invalidated,
-    invalidatedAt: row.invalidated_at,
+    createdAt: new Date(row.created_at),
+    expiresAt: new Date(row.expires_at),
+    invalidated: row.invalidated === 1,
+    invalidatedAt: row.invalidated_at === null ? null : new Date(row.invalidated_at),
   };
 }
 
@@ -62,7 +63,7 @@ function rowToEntity(row: SessionRow): SessionEntity {
 // ---------------------------------------------------------------------------
 
 export class SessionRepository implements ISessionRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   /**
    * Insert a new session row and return the persisted entity (with generated
@@ -75,21 +76,17 @@ export class SessionRepository implements ISessionRepository {
     createdAt: Date,
     expiresAt: Date,
   ): Promise<SessionEntity> {
-    const sql = `
-      INSERT INTO sessions
-        (user_id, token_hash, created_at, expires_at, invalidated, invalidated_at)
-      VALUES ($1, $2, $3, $4, FALSE, NULL)
-      RETURNING *
-    `;
+    const id = uuidv4();
+    this.db
+      .prepare(
+        `INSERT INTO sessions
+          (id, user_id, token_hash, created_at, expires_at, invalidated, invalidated_at)
+         VALUES (?, ?, ?, ?, ?, 0, NULL)`,
+      )
+      .run(id, userId, tokenHash, createdAt.toISOString(), expiresAt.toISOString());
 
-    const result: QueryResult<SessionRow> = await this.pool.query(sql, [
-      userId,
-      tokenHash,
-      createdAt,
-      expiresAt,
-    ]);
-
-    return rowToEntity(result.rows[0]);
+    const row = this.db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow;
+    return rowToEntity(row);
   }
 
   /**
@@ -97,32 +94,20 @@ export class SessionRepository implements ISessionRepository {
    * Returns null if no match is found.
    */
   async findByTokenHash(tokenHash: string): Promise<SessionEntity | null> {
-    const sql = `
-      SELECT * FROM sessions
-      WHERE token_hash = $1
-      LIMIT 1
-    `;
+    const row = this.db
+      .prepare('SELECT * FROM sessions WHERE token_hash = ? LIMIT 1')
+      .get(tokenHash) as SessionRow | undefined;
 
-    const result: QueryResult<SessionRow> = await this.pool.query(sql, [tokenHash]);
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    return rowToEntity(result.rows[0]);
+    return row === undefined ? null : rowToEntity(row);
   }
 
   /**
    * Mark a single session as invalidated (logout — FR-005, EC-002).
    */
   async markInvalidated(id: string, invalidatedAt: Date): Promise<void> {
-    const sql = `
-      UPDATE sessions
-      SET invalidated = TRUE, invalidated_at = $1
-      WHERE id = $2
-    `;
-
-    await this.pool.query(sql, [invalidatedAt, id]);
+    this.db
+      .prepare('UPDATE sessions SET invalidated = 1, invalidated_at = ? WHERE id = ?')
+      .run(invalidatedAt.toISOString(), id);
   }
 
   /**
@@ -130,13 +115,11 @@ export class SessionRepository implements ISessionRepository {
    * Used on account suspension (EC-003) and password reset (FR-018).
    */
   async invalidateAllForUser(userId: string): Promise<void> {
-    const sql = `
-      UPDATE sessions
-      SET invalidated = TRUE, invalidated_at = NOW()
-      WHERE user_id = $1 AND invalidated = FALSE
-    `;
-
-    await this.pool.query(sql, [userId]);
+    this.db
+      .prepare(
+        'UPDATE sessions SET invalidated = 1, invalidated_at = ? WHERE user_id = ? AND invalidated = 0',
+      )
+      .run(new Date().toISOString(), userId);
   }
 
   /**
@@ -144,13 +127,12 @@ export class SessionRepository implements ISessionRepository {
    * and not yet past expires_at.
    */
   async countActiveForUser(userId: string): Promise<number> {
-    const sql = `
-      SELECT COUNT(*) AS count FROM sessions
-      WHERE user_id = $1 AND invalidated = FALSE AND expires_at > NOW()
-    `;
+    const row = this.db
+      .prepare(
+        'SELECT COUNT(*) AS count FROM sessions WHERE user_id = ? AND invalidated = 0 AND expires_at > ?',
+      )
+      .get(userId, new Date().toISOString()) as { count: number };
 
-    const result: QueryResult<{ count: string }> = await this.pool.query(sql, [userId]);
-
-    return parseInt(result.rows[0].count, 10);
+    return row.count;
   }
 }

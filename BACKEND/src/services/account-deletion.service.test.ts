@@ -4,7 +4,7 @@ process.env.ACCOUNT_DELETION_REQUEST_EMAIL_TEMPLATE_ID = 'd-test-deletion-reques
 process.env.ACCOUNT_DELETION_NOTICE_EMAIL_TEMPLATE_ID = 'd-test-deletion-notice-template';
 
 import crypto from 'crypto';
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { DefaultAccountDeletionService } from './account-deletion.service';
 import { IUserRepository } from '../repositories/user.repository';
 import { IDeletionRequestRepository } from '../repositories/deletion-request.repository';
@@ -55,12 +55,36 @@ function buildRequest(overrides: Partial<DeletionRequestEntity> = {}): DeletionR
   };
 }
 
+function buildMockDb() {
+  const calls: { sql: string; params: unknown[] }[] = [];
+  let failWhenSqlIncludes: string | null = null;
+  const prepare = jest.fn((sql: string) => ({
+    run: (...params: unknown[]) => {
+      calls.push({ sql, params });
+      if (failWhenSqlIncludes !== null && sql.includes(failWhenSqlIncludes)) {
+        throw new Error('simulated DB failure');
+      }
+    },
+    get: jest.fn(),
+    all: jest.fn(),
+  }));
+  const transaction = jest.fn((fn: () => unknown) => () => fn());
+  const db = { prepare, transaction } as unknown as jest.Mocked<Database>;
+  return {
+    db,
+    calls,
+    transaction,
+    setFailure: (substring: string) => {
+      failWhenSqlIncludes = substring;
+    },
+  };
+}
+
 describe('DefaultAccountDeletionService', () => {
   let userRepository: jest.Mocked<IUserRepository>;
   let deletionRequestRepository: jest.Mocked<IDeletionRequestRepository>;
   let notificationPort: jest.Mocked<EmailDeliveryPort>;
-  let mockClient: jest.Mocked<PoolClient>;
-  let pool: jest.Mocked<Pool>;
+  let mockDb: ReturnType<typeof buildMockDb>;
   let service: DefaultAccountDeletionService;
 
   beforeEach(() => {
@@ -85,19 +109,13 @@ describe('DefaultAccountDeletionService', () => {
     notificationPort = {
       sendTransactional: jest.fn().mockResolvedValue({ success: true }),
     };
-    mockClient = {
-      query: jest.fn().mockResolvedValue({ rows: [] }),
-      release: jest.fn(),
-    } as unknown as jest.Mocked<PoolClient>;
-    pool = {
-      connect: jest.fn().mockResolvedValue(mockClient),
-    } as unknown as jest.Mocked<Pool>;
+    mockDb = buildMockDb();
 
     service = new DefaultAccountDeletionService(
       userRepository,
       deletionRequestRepository,
       notificationPort,
-      pool,
+      mockDb.db,
     );
   });
 
@@ -189,11 +207,9 @@ describe('DefaultAccountDeletionService', () => {
 
       await service.confirmDeletion('user-1', code);
 
-      const sessionInvalidationCall = mockClient.query.mock.calls.find(
-        ([sql]) => typeof sql === 'string' && sql.includes('UPDATE sessions'),
-      );
+      const sessionInvalidationCall = mockDb.calls.find((c) => c.sql.includes('UPDATE sessions'));
       expect(sessionInvalidationCall).toBeDefined();
-      expect(sessionInvalidationCall![1]).toEqual([expect.any(Date), user.id]);
+      expect(sessionInvalidationCall!.params).toEqual([expect.any(String), user.id]);
     });
 
     test('successful confirm inserts exactly one notification record with the pre-anonymization email', async () => {
@@ -208,12 +224,17 @@ describe('DefaultAccountDeletionService', () => {
 
       await service.confirmDeletion('user-1', code);
 
-      const insertCalls = mockClient.query.mock.calls.filter(
-        ([sql]) =>
-          typeof sql === 'string' && sql.includes('INSERT INTO account_deletion_notification_records'),
+      const insertCalls = mockDb.calls.filter((c) =>
+        c.sql.includes('INSERT INTO account_deletion_notification_records'),
       );
       expect(insertCalls).toHaveLength(1);
-      expect(insertCalls[0][1]).toEqual([user.id, 'original@example.test', expect.any(Date)]);
+      expect(insertCalls[0].params).toEqual([
+        expect.any(String),
+        user.id,
+        'original@example.test',
+        expect.any(String),
+        expect.any(String),
+      ]);
     });
 
     test('successful confirm anonymizes the user and marks the request confirmed', async () => {
@@ -229,13 +250,9 @@ describe('DefaultAccountDeletionService', () => {
       const result = await service.confirmDeletion('user-1', code);
 
       expect(result.userId).toBe(user.id);
-      const userUpdateCall = mockClient.query.mock.calls.find(
-        ([sql]) => typeof sql === 'string' && sql.includes("UPDATE users"),
-      );
+      const userUpdateCall = mockDb.calls.find((c) => c.sql.includes('UPDATE users'));
       expect(userUpdateCall).toBeDefined();
-      expect(mockClient.query).toHaveBeenCalledWith('BEGIN');
-      expect(mockClient.query).toHaveBeenCalledWith('COMMIT');
-      expect(mockClient.release).toHaveBeenCalledTimes(1);
+      expect(mockDb.transaction).toHaveBeenCalled();
     });
 
     test('rolls back the transaction if a write fails mid-way', async () => {
@@ -246,16 +263,16 @@ describe('DefaultAccountDeletionService', () => {
           codeHash: hashTestCode(code),
         }),
       );
-      mockClient.query = jest.fn().mockImplementation(async (sql: string) => {
-        if (sql === 'BEGIN') return { rows: [] };
-        throw new Error('simulated DB failure');
-      });
+      mockDb.setFailure('UPDATE users');
 
       await expect(service.confirmDeletion('user-1', code)).rejects.toThrow(
         'simulated DB failure',
       );
-      expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
-      expect(mockClient.release).toHaveBeenCalledTimes(1);
+
+      const requestUpdateCall = mockDb.calls.find((c) =>
+        c.sql.includes('UPDATE account_deletion_requests'),
+      );
+      expect(requestUpdateCall).toBeUndefined();
     });
   });
 
@@ -281,7 +298,7 @@ describe('DefaultAccountDeletionService', () => {
         expect.any(Date),
       );
       expect(userRepository.anonymizeAndMarkDeleted).not.toHaveBeenCalled();
-      expect(pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
   });
 });

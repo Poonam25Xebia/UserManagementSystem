@@ -2,12 +2,13 @@
  * token.repository.ts
  *
  * Repository for the `activation_tokens` table.  All queries use parameterised
- * `pg` placeholders — no string interpolation.
+ * `?` placeholders — no string interpolation.
  *
  * Requirements: US-073 FR-003; US-074 FR-002, FR-006, FR-011
  */
 
-import { Pool, QueryResult } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import { ActivationToken } from '../types/registration.types';
 
 // ---------------------------------------------------------------------------
@@ -22,17 +23,17 @@ export interface ITokenRepository {
 }
 
 // ---------------------------------------------------------------------------
-// Row type returned by pg
+// Row type returned by better-sqlite3
 // ---------------------------------------------------------------------------
 
 interface TokenRow {
   id: string;
   user_id: string;
   token_value: string;
-  issued_at: Date;
-  expires_at: Date;
-  consumed: boolean;
-  consumed_at: Date | null;
+  issued_at: string;
+  expires_at: string;
+  consumed: number;
+  consumed_at: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,10 +45,10 @@ function rowToEntity(row: TokenRow): ActivationToken {
     id: row.id,
     userId: row.user_id,
     tokenValue: row.token_value,
-    issuedAt: row.issued_at,
-    expiresAt: row.expires_at,
-    consumed: row.consumed,
-    consumedAt: row.consumed_at,
+    issuedAt: new Date(row.issued_at),
+    expiresAt: new Date(row.expires_at),
+    consumed: row.consumed === 1,
+    consumedAt: row.consumed_at === null ? null : new Date(row.consumed_at),
   };
 }
 
@@ -56,30 +57,34 @@ function rowToEntity(row: TokenRow): ActivationToken {
 // ---------------------------------------------------------------------------
 
 export class TokenRepository implements ITokenRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   /**
    * Insert a new activation token and return the persisted entity (with
    * generated id).
    */
   async insert(token: Omit<ActivationToken, 'id'>): Promise<ActivationToken> {
-    const sql = `
-      INSERT INTO activation_tokens
-        (user_id, token_value, issued_at, expires_at, consumed, consumed_at)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *
-    `;
+    const id = uuidv4();
+    this.db
+      .prepare(
+        `INSERT INTO activation_tokens
+          (id, user_id, token_value, issued_at, expires_at, consumed, consumed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        token.userId,
+        token.tokenValue,
+        token.issuedAt.toISOString(),
+        token.expiresAt.toISOString(),
+        token.consumed ? 1 : 0,
+        token.consumedAt === null ? null : token.consumedAt.toISOString(),
+      );
 
-    const result: QueryResult<TokenRow> = await this.pool.query(sql, [
-      token.userId,
-      token.tokenValue,
-      token.issuedAt,
-      token.expiresAt,
-      token.consumed,
-      token.consumedAt,
-    ]);
-
-    return rowToEntity(result.rows[0]);
+    const row = this.db
+      .prepare('SELECT * FROM activation_tokens WHERE id = ?')
+      .get(id) as TokenRow;
+    return rowToEntity(row);
   }
 
   /**
@@ -87,19 +92,11 @@ export class TokenRepository implements ITokenRepository {
    * Returns null if not found.
    */
   async findByTokenValue(tokenValue: string): Promise<ActivationToken | null> {
-    const sql = `
-      SELECT * FROM activation_tokens
-      WHERE token_value = $1
-      LIMIT 1
-    `;
+    const row = this.db
+      .prepare('SELECT * FROM activation_tokens WHERE token_value = ? LIMIT 1')
+      .get(tokenValue) as TokenRow | undefined;
 
-    const result: QueryResult<TokenRow> = await this.pool.query(sql, [tokenValue]);
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    return rowToEntity(result.rows[0]);
+    return row === undefined ? null : rowToEntity(row);
   }
 
   /**
@@ -107,31 +104,19 @@ export class TokenRepository implements ITokenRepository {
    * Returns null if not found (one token per user due to UNIQUE constraint).
    */
   async findByUserId(userId: string): Promise<ActivationToken | null> {
-    const sql = `
-      SELECT * FROM activation_tokens
-      WHERE user_id = $1
-      LIMIT 1
-    `;
+    const row = this.db
+      .prepare('SELECT * FROM activation_tokens WHERE user_id = ? LIMIT 1')
+      .get(userId) as TokenRow | undefined;
 
-    const result: QueryResult<TokenRow> = await this.pool.query(sql, [userId]);
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    return rowToEntity(result.rows[0]);
+    return row === undefined ? null : rowToEntity(row);
   }
 
   /**
    * Mark a token as consumed after successful account activation.
    */
   async markConsumed(id: string, consumedAt: Date): Promise<void> {
-    const sql = `
-      UPDATE activation_tokens
-      SET consumed = true, consumed_at = $1
-      WHERE id = $2
-    `;
-
-    await this.pool.query(sql, [consumedAt, id]);
+    this.db
+      .prepare('UPDATE activation_tokens SET consumed = 1, consumed_at = ? WHERE id = ?')
+      .run(consumedAt.toISOString(), id);
   }
 }

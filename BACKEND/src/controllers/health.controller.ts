@@ -12,10 +12,10 @@
  */
 
 import { Request, Response } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 
 export class HealthController {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   /**
    * Handle GET /health
@@ -24,7 +24,7 @@ export class HealthController {
     let dbReachable: boolean;
 
     try {
-      await this.pool.query('SELECT 1');
+      this.db.prepare('SELECT 1').get();
       dbReachable = true;
     } catch (err) {
       console.error('[HealthController] Database health check failed:', err);

@@ -16,7 +16,7 @@ process.env.ACCOUNT_DELETION_NOTICE_EMAIL_TEMPLATE_ID = 'd-test-deletion-notice-
 
 import request from 'supertest';
 import express, { Request, Response } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { Redis } from 'ioredis';
 import crypto from 'crypto';
 import { OtpDeliveryPort } from '../adapters/otp-delivery.port';
@@ -26,6 +26,7 @@ import { UserRepository } from '../repositories/user.repository';
 import { SessionRepository } from '../repositories/session.repository';
 import { DefaultSessionService } from '../services/session.service';
 import { createSessionValidationMiddleware } from '../middleware/session-validation.middleware';
+import { createTestDb, clearAllTables, closeTestDb, TestDb } from './test-db';
 
 const TEST_PASSWORD = 'Passw0rd!';
 
@@ -56,84 +57,10 @@ class RecordingEmailDeliveryPort implements EmailDeliveryPort {
 }
 
 let app: any;
-let pool: Pool;
+let testDb: TestDb;
+let db: Database;
 let otpRedisClient: Redis;
 let emailDeliveryPort: RecordingEmailDeliveryPort;
-
-async function ensureDatabaseSchema(pool: Pool): Promise<void> {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      username VARCHAR(255) NOT NULL,
-      username_normalised VARCHAR(255) NOT NULL,
-      email VARCHAR(320) NOT NULL,
-      password_hash VARCHAR(72) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'suspended')),
-      registration_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      activated_at TIMESTAMPTZ NULL,
-      failed_login_count SMALLINT NOT NULL DEFAULT 0,
-      locked_until TIMESTAMPTZ NULL,
-      last_login_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS activation_tokens (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-      token_value VARCHAR(128) NOT NULL,
-      issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      consumed BOOLEAN NOT NULL DEFAULT FALSE,
-      consumed_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS registration_email_records (
-      record_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-      recipient_address VARCHAR(320) NOT NULL,
-      dispatch_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      delivery_status VARCHAR(10) NOT NULL DEFAULT 'queued' CHECK (delivery_status IN ('queued', 'sent', 'failed')),
-      retry_count SMALLINT NOT NULL DEFAULT 0,
-      activation_token_id UUID REFERENCES activation_tokens(id) ON DELETE SET NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token_hash VARCHAR(64) NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      invalidated BOOLEAN NOT NULL DEFAULT FALSE,
-      invalidated_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS password_recovery_requests (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token VARCHAR(128) NOT NULL,
-      requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      consumed BOOLEAN NOT NULL DEFAULT FALSE,
-      consumed_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_users_username_normalised ON users(username_normalised)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_users_email ON users(email)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_activation_tokens_token_value ON activation_tokens(token_value)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_sessions_token_hash ON sessions(token_hash)`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_prr_token ON password_recovery_requests(token)`);
-}
 
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -161,41 +88,32 @@ async function registerAndActivateUser(
     .expect(201);
   const userId = registerResponse.body.userId;
 
-  const tokenResult = await pool.query(
-    'SELECT token_value FROM activation_tokens WHERE user_id = $1',
-    [userId],
-  );
-  const tokenValue = tokenResult.rows[0].token_value;
+  const tokenRow = db
+    .prepare('SELECT token_value FROM activation_tokens WHERE user_id = ?')
+    .get(userId) as { token_value: string };
+  const tokenValue = tokenRow.token_value;
 
   await request(app).post('/api/v1/users/activate').send({ token: tokenValue }).expect(200);
 
   return { userId, email: payload.emailAddress, password: payload.password };
 }
 
-async function clearTables(): Promise<void> {
-  await pool.query('DELETE FROM sessions');
-  await pool.query('DELETE FROM password_recovery_requests');
-  await pool.query('DELETE FROM registration_email_records');
-  await pool.query('DELETE FROM activation_tokens');
-  await pool.query('DELETE FROM users');
-}
-
 beforeAll(async () => {
-  pool = new Pool();
+  testDb = createTestDb();
+  db = testDb.db;
   otpRedisClient = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
   emailDeliveryPort = new RecordingEmailDeliveryPort();
-  await ensureDatabaseSchema(pool);
   const appModule = await import('../app');
-  app = appModule.createApp(pool, otpRedisClient, new NoopOtpDeliveryPort(), emailDeliveryPort);
+  app = appModule.createApp(db, otpRedisClient, new NoopOtpDeliveryPort(), emailDeliveryPort);
 });
 
 afterEach(async () => {
   emailDeliveryPort.dispatched = [];
-  await clearTables();
+  clearAllTables(db);
 });
 
 afterAll(async () => {
-  await pool.end();
+  closeTestDb(testDb);
   await otpRedisClient.quit();
 });
 
@@ -217,8 +135,8 @@ describe('Integration | Login happy path and failures', () => {
     expect(typeof loginResponse.body.expires_at).toBe('string');
 
     const tokenHash = crypto.createHash('sha256').update(loginResponse.body.token).digest('hex');
-    const sessionRow = await pool.query('SELECT * FROM sessions WHERE token_hash = $1', [tokenHash]);
-    expect(sessionRow.rowCount).toBe(1);
+    const sessionRow = db.prepare('SELECT * FROM sessions WHERE token_hash = ?').get(tokenHash);
+    expect(sessionRow).toBeDefined();
   });
 
   test('unknown email and wrong password return identical 401 bodies', async () => {
@@ -289,9 +207,9 @@ describe('Integration | Account lockout', () => {
     // Simulate the lockout window having already elapsed rather than waiting
     // real wall-clock minutes — matches the registration suite's approach to
     // testing expired activation tokens.
-    await pool.query(
-      `UPDATE users SET locked_until = NOW() - INTERVAL '1 second' WHERE id = $1`,
-      [userId],
+    db.prepare('UPDATE users SET locked_until = ? WHERE id = ?').run(
+      new Date(Date.now() - 1000).toISOString(),
+      userId,
     );
 
     await request(app).post('/api/v1/auth/login').send({ email, password }).expect(200);
@@ -319,12 +237,10 @@ describe('Integration | Logout and session validation', () => {
       .expect(200);
 
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    const sessionRow = await pool.query(
-      'SELECT invalidated, invalidated_at FROM sessions WHERE token_hash = $1',
-      [tokenHash],
-    );
-    expect(sessionRow.rowCount).toBe(1);
-    expect(sessionRow.rows[0].invalidated).toBe(true);
+    const sessionRow = db
+      .prepare('SELECT invalidated, invalidated_at FROM sessions WHERE token_hash = ?')
+      .get(tokenHash) as { invalidated: number; invalidated_at: string | null };
+    expect(sessionRow.invalidated).toBe(1);
   });
 
   test('a protected route guarded by SessionValidationMiddleware rejects an expired token before the handler runs', async () => {
@@ -333,7 +249,10 @@ describe('Integration | Logout and session validation', () => {
     const token = loginResponse.body.token;
 
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-    await pool.query(`UPDATE sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE token_hash = $1`, [tokenHash]);
+    db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?').run(
+      new Date(Date.now() - 1000).toISOString(),
+      tokenHash,
+    );
 
     const { app: protectedApp, handlerCalls } = buildProtectedTestApp();
 
@@ -353,7 +272,7 @@ describe('Integration | Logout and session validation', () => {
 
     // Simulates an out-of-scope admin action — user suspension itself is
     // owned by a different feature; this spec only verifies F-03's reaction.
-    await pool.query(`UPDATE users SET status = 'suspended' WHERE id = $1`, [userId]);
+    db.prepare("UPDATE users SET status = 'suspended' WHERE id = ?").run(userId);
 
     const { app: protectedApp } = buildProtectedTestApp();
 
@@ -364,10 +283,12 @@ describe('Integration | Logout and session validation', () => {
 
     expect(response.body.error_code).toBe('AUTH_ACCOUNT_NOT_ACTIVE');
 
-    const sessionRows = await pool.query('SELECT invalidated FROM sessions WHERE user_id = $1', [userId]);
-    expect(sessionRows.rowCount).toBeGreaterThan(0);
-    for (const row of sessionRows.rows) {
-      expect(row.invalidated).toBe(true);
+    const sessionRows = db
+      .prepare('SELECT invalidated FROM sessions WHERE user_id = ?')
+      .all(userId) as Array<{ invalidated: number }>;
+    expect(sessionRows.length).toBeGreaterThan(0);
+    for (const row of sessionRows) {
+      expect(row.invalidated).toBe(1);
     }
   });
 });
@@ -381,8 +302,8 @@ describe('Integration | Logout and session validation', () => {
  * every future protected route will use, against real session rows.
  */
 function buildProtectedTestApp() {
-  const userRepository = new UserRepository(pool);
-  const sessionRepository = new SessionRepository(pool);
+  const userRepository = new UserRepository(db);
+  const sessionRepository = new SessionRepository(db);
   const sessionService = new DefaultSessionService(sessionRepository, userRepository);
   const middleware = createSessionValidationMiddleware(sessionService);
 
@@ -428,12 +349,10 @@ describe('Integration | Password recovery and reset', () => {
 
     await request(app).post('/api/v1/auth/password-recovery').send({ email }).expect(202);
 
-    const recoveryRow = await pool.query(
-      'SELECT token FROM password_recovery_requests WHERE user_id = $1',
-      [userId],
-    );
-    expect(recoveryRow.rowCount).toBe(1);
-    const recoveryToken = recoveryRow.rows[0].token;
+    const recoveryRow = db
+      .prepare('SELECT token FROM password_recovery_requests WHERE user_id = ?')
+      .get(userId) as { token: string };
+    const recoveryToken = recoveryRow.token;
 
     const newPassword = 'NewPassw0rd!';
     await request(app)
@@ -443,8 +362,10 @@ describe('Integration | Password recovery and reset', () => {
 
     // Old session invalidated.
     const oldTokenHash = crypto.createHash('sha256').update(oldToken).digest('hex');
-    const oldSessionRow = await pool.query('SELECT invalidated FROM sessions WHERE token_hash = $1', [oldTokenHash]);
-    expect(oldSessionRow.rows[0].invalidated).toBe(true);
+    const oldSessionRow = db
+      .prepare('SELECT invalidated FROM sessions WHERE token_hash = ?')
+      .get(oldTokenHash) as { invalidated: number };
+    expect(oldSessionRow.invalidated).toBe(1);
 
     // Old password no longer works; new password does.
     await request(app).post('/api/v1/auth/login').send({ email, password }).expect(401);
@@ -455,13 +376,15 @@ describe('Integration | Password recovery and reset', () => {
     const { userId, email } = await registerAndActivateUser();
 
     await request(app).post('/api/v1/auth/password-recovery').send({ email }).expect(202);
-    const recoveryRow = await pool.query(
-      'SELECT id, token FROM password_recovery_requests WHERE user_id = $1',
-      [userId],
-    );
-    const { id, token } = recoveryRow.rows[0];
+    const recoveryRow = db
+      .prepare('SELECT id, token FROM password_recovery_requests WHERE user_id = ?')
+      .get(userId) as { id: string; token: string };
+    const { id, token } = recoveryRow;
 
-    await pool.query(`UPDATE password_recovery_requests SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1`, [id]);
+    db.prepare('UPDATE password_recovery_requests SET expires_at = ? WHERE id = ?').run(
+      new Date(Date.now() - 1000).toISOString(),
+      id,
+    );
 
     const response = await request(app)
       .post('/api/v1/auth/password-reset')
@@ -475,11 +398,10 @@ describe('Integration | Password recovery and reset', () => {
     const { userId, email } = await registerAndActivateUser();
 
     await request(app).post('/api/v1/auth/password-recovery').send({ email }).expect(202);
-    const recoveryRow = await pool.query(
-      'SELECT token FROM password_recovery_requests WHERE user_id = $1',
-      [userId],
-    );
-    const token = recoveryRow.rows[0].token;
+    const recoveryRow = db
+      .prepare('SELECT token FROM password_recovery_requests WHERE user_id = ?')
+      .get(userId) as { token: string };
+    const token = recoveryRow.token;
 
     const response = await request(app)
       .post('/api/v1/auth/password-reset')
@@ -500,21 +422,22 @@ describe('Integration | Cross-feature regression with Registration (F-01)', () =
   test('a user registered and activated via F-01 logs in via F-03 using the same bcrypt hash, unmodified by login', async () => {
     const { userId, email, password } = await registerAndActivateUser();
 
-    const beforeLogin = await pool.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
-    const passwordHashBeforeLogin = beforeLogin.rows[0].password_hash;
+    const beforeLogin = db
+      .prepare('SELECT password_hash FROM users WHERE id = ?')
+      .get(userId) as { password_hash: string };
+    const passwordHashBeforeLogin = beforeLogin.password_hash;
 
     const loginResponse = await request(app).post('/api/v1/auth/login').send({ email, password }).expect(200);
     expect(loginResponse.body).toHaveProperty('token');
 
-    const afterLogin = await pool.query(
-      'SELECT password_hash, last_login_at, failed_login_count FROM users WHERE id = $1',
-      [userId],
-    );
+    const afterLogin = db
+      .prepare('SELECT password_hash, last_login_at, failed_login_count FROM users WHERE id = ?')
+      .get(userId) as { password_hash: string; last_login_at: string | null; failed_login_count: number };
     // The shared PasswordPolicyEvaluator/bcrypt hash set at registration
     // (F-01) is exactly what login's bcrypt.compare (F-03) checks against —
     // a successful login must not rehash or otherwise mutate it.
-    expect(afterLogin.rows[0].password_hash).toBe(passwordHashBeforeLogin);
-    expect(afterLogin.rows[0].last_login_at).not.toBeNull();
-    expect(afterLogin.rows[0].failed_login_count).toBe(0);
+    expect(afterLogin.password_hash).toBe(passwordHashBeforeLogin);
+    expect(afterLogin.last_login_at).not.toBeNull();
+    expect(afterLogin.failed_login_count).toBe(0);
   });
 });

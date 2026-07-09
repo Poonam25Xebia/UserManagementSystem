@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end smoke test for the User Management Service API.
-# Requires: curl, node (run from the repo root so `node` resolves the `pg`
-# dependency), and a reachable Postgres matching .env (used to read
-# activation/recovery/deletion tokens directly, since this script does not
-# have access to the real mailbox behind SendGrid).
+# Requires: curl, node (run from the repo root so `node` resolves the
+# `better-sqlite3` dependency), and a reachable SQLite file at DATABASE_PATH
+# (used to read activation/recovery/deletion tokens directly, since this
+# script does not have access to the real mailbox behind SendGrid).
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:3000}"
@@ -16,15 +16,13 @@ NEW_PASSWORD='N3wSup3r$ecretPW2'
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 db_query() {
-  # $1 = SQL. Uses the project's own pg dependency via a one-off node script.
+  # $1 = SQL. Uses the project's own better-sqlite3 dependency via a one-off node script.
   node -e "
-    const { Client } = require('pg');
-    const c = new Client();
-    c.connect().then(async () => {
-      const r = await c.query(process.argv[1]);
-      console.log(JSON.stringify(r.rows));
-      await c.end();
-    }).catch(e => { console.error(e.message); process.exit(1); });
+    const Database = require('better-sqlite3');
+    const db = new Database(process.env.DATABASE_PATH || './data/app.db');
+    const rows = db.prepare(process.argv[1]).all();
+    console.log(JSON.stringify(rows));
+    db.close();
   " "$1"
 }
 

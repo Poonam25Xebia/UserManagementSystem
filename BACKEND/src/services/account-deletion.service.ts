@@ -38,7 +38,9 @@
  */
 
 import crypto from 'crypto';
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
+import { withTransaction } from '../db/with-transaction';
 import { IUserRepository } from '../repositories/user.repository';
 import { IDeletionRequestRepository } from '../repositories/deletion-request.repository';
 import { EmailDeliveryPort } from '../adapters/email-delivery.port';
@@ -92,8 +94,8 @@ export class DefaultAccountDeletionService implements AccountDeletionService {
    * Note: no DeletionNotificationRecordRepository dependency here — the
    * 'queued' notification row inserted by confirmDeletion() MUST commit
    * atomically with the user/request/session writes, so it is written via
-   * the same raw PoolClient transaction rather than through the repository
-   * (which only ever talks to `pool`, not a specific transaction's client).
+   * the same `withTransaction` callback rather than through the repository
+   * (which only ever talks to `db` outside of any specific transaction).
    * This mirrors PasswordRecoveryService.resetPassword()'s own use of raw
    * SQL for the `sessions` table instead of going through SessionRepository.
    */
@@ -101,7 +103,7 @@ export class DefaultAccountDeletionService implements AccountDeletionService {
     private readonly userRepository: IUserRepository,
     private readonly deletionRequestRepository: IDeletionRequestRepository,
     private readonly notificationPort: EmailDeliveryPort,
-    private readonly pool: Pool,
+    private readonly db: Database,
   ) {}
 
   /**
@@ -192,45 +194,45 @@ export class DefaultAccountDeletionService implements AccountDeletionService {
     const anonymizedUsername = `deleted-user-${user.id}`;
     const deletedAt = now;
 
-    const client: PoolClient = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    await withTransaction(this.db, () => {
+      this.db
+        .prepare(
+          `UPDATE users
+           SET status = 'deleted', email = ?, username = ?, username_normalised = ?, deleted_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          anonymizedEmail,
+          anonymizedUsername,
+          anonymizedUsername.toLowerCase(),
+          deletedAt.toISOString(),
+          user.id,
+        );
 
-      await client.query(
-        `UPDATE users
-         SET status = 'deleted', email = $1, username = $2, username_normalised = $3, deleted_at = $4
-         WHERE id = $5`,
-        [anonymizedEmail, anonymizedUsername, anonymizedUsername.toLowerCase(), deletedAt, user.id],
-      );
+      this.db
+        .prepare(
+          `UPDATE account_deletion_requests
+           SET status = 'confirmed', confirmed_at = ?
+           WHERE id = ?`,
+        )
+        .run(deletedAt.toISOString(), request.id);
 
-      await client.query(
-        `UPDATE account_deletion_requests
-         SET status = 'confirmed', confirmed_at = $1
-         WHERE id = $2`,
-        [deletedAt, request.id],
-      );
+      this.db
+        .prepare(
+          `UPDATE sessions
+           SET invalidated = 1, invalidated_at = ?
+           WHERE user_id = ? AND invalidated = 0`,
+        )
+        .run(deletedAt.toISOString(), user.id);
 
-      await client.query(
-        `UPDATE sessions
-         SET invalidated = true, invalidated_at = $1
-         WHERE user_id = $2 AND invalidated = false`,
-        [deletedAt, user.id],
-      );
-
-      await client.query(
-        `INSERT INTO account_deletion_notification_records
-           (user_id, recipient_address, deletion_date, delivery_status)
-         VALUES ($1, $2, $3, 'queued')`,
-        [user.id, preservedEmail, deletedAt],
-      );
-
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+      this.db
+        .prepare(
+          `INSERT INTO account_deletion_notification_records
+             (record_id, user_id, recipient_address, deletion_date, dispatch_timestamp, delivery_status)
+           VALUES (?, ?, ?, ?, ?, 'queued')`,
+        )
+        .run(uuidv4(), user.id, preservedEmail, deletedAt.toISOString(), deletedAt.toISOString());
+    });
 
     return { userId: user.id, deletedAt };
   }
