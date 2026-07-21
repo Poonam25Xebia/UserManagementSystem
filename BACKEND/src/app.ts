@@ -208,10 +208,10 @@ export function createApp(
   // /health is intentionally unauthenticated (API Gateway probing).
   app.use(createHealthRouter(db));
 
-  // Swagger UI — serves DOCS/openapi.yaml, generated from the routes/controllers
+  // Swagger UI — serves BACKEND/openapi.yaml, generated from the routes/controllers
   // themselves (see DOCS/PROJECT_ANALYSIS.md Phase 9). Unauthenticated, matching
   // the other introspection endpoint (/health).
-  const openApiDocument = YAML.load(path.join(__dirname, '..', '..', 'DOCS', 'openapi.yaml'));
+  const openApiDocument = YAML.load(path.join(__dirname, '..', 'openapi.yaml'));
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiDocument));
 
   app.use((_req: Request, res: Response) => {
