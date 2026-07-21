@@ -6,13 +6,13 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { HealthController } from '../controllers/health.controller';
 
-export function createHealthRouter(pool: Pool): Router {
+export function createHealthRouter(db: Database): Router {
   const router = Router();
 
-  const controller = new HealthController(pool);
+  const controller = new HealthController(db);
 
   // GET /health
   router.get('/health', (req, res) => { void controller.check(req, res); });

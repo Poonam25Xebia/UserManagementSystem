@@ -27,7 +27,8 @@
  */
 
 import crypto from 'crypto';
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { withTransaction } from '../db/with-transaction';
 import { IUserRepository } from '../repositories/user.repository';
 import { IPasswordRecoveryRequestRepository } from '../repositories/password-recovery-request.repository';
 import { PasswordPolicyEvaluator } from '../validators/password-policy.evaluator';
@@ -62,7 +63,7 @@ export class DefaultPasswordRecoveryService implements PasswordRecoveryService {
     private readonly passwordPolicyEvaluator: PasswordPolicyEvaluator,
     private readonly passwordHasher: PasswordHasher,
     private readonly notificationPort: EmailDeliveryPort,
-    private readonly pool: Pool,
+    private readonly db: Database,
   ) {}
 
   /**
@@ -119,31 +120,18 @@ export class DefaultPasswordRecoveryService implements PasswordRecoveryService {
     const newPasswordHash = await this.passwordHasher.hash(newPassword);
 
     // --- Step 4: Atomic UPDATE — password hash + token consumed + sessions invalidated (FR-018) ---
-    const client: PoolClient = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
+    await withTransaction(this.db, () => {
+      this.db
+        .prepare(`UPDATE users SET password_hash = ? WHERE id = ?`)
+        .run(newPasswordHash, request.userId);
 
-      await client.query(
-        `UPDATE users SET password_hash = $1 WHERE id = $2`,
-        [newPasswordHash, request.userId],
-      );
+      this.db
+        .prepare(`UPDATE password_recovery_requests SET consumed = 1, consumed_at = ? WHERE id = ?`)
+        .run(now.toISOString(), request.id);
 
-      await client.query(
-        `UPDATE password_recovery_requests SET consumed = true, consumed_at = $1 WHERE id = $2`,
-        [now, request.id],
-      );
-
-      await client.query(
-        `UPDATE sessions SET invalidated = true, invalidated_at = $1 WHERE user_id = $2 AND invalidated = false`,
-        [now, request.userId],
-      );
-
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+      this.db
+        .prepare(`UPDATE sessions SET invalidated = 1, invalidated_at = ? WHERE user_id = ? AND invalidated = 0`)
+        .run(now.toISOString(), request.userId);
+    });
   }
 }

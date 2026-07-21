@@ -7,13 +7,16 @@ process.env.REDIS_URL = REDIS_URL;
 
 import request from 'supertest';
 import express, { Express } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import { Redis } from 'ioredis';
 import { createOtpRouter } from '../routes/otp.routes';
 import { OtpDeliveryPort } from '../adapters/otp-delivery.port';
+import { createTestDb, closeTestDb, TestDb } from './test-db';
 
 let app: Express;
-let pool: Pool;
+let testDb: TestDb;
+let db: Database;
 let redis: Redis;
 let deliveryPort: RecordingDeliveryPort;
 
@@ -32,68 +35,31 @@ class RecordingDeliveryPort implements OtpDeliveryPort {
   }
 }
 
-async function ensureDatabaseSchema(pool: Pool): Promise<void> {
-  await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      username VARCHAR(255) NOT NULL,
-      username_normalised VARCHAR(255) NOT NULL,
-      email VARCHAR(320) NOT NULL,
-      password_hash VARCHAR(72) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'suspended')),
-      registration_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      activated_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS otp_requests (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      email_address VARCHAR(320) NOT NULL,
-      code_hash VARCHAR(256) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      invalidated_at TIMESTAMPTZ NULL,
-      attempt_sequence SMALLINT NOT NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uidx_otp_requests_active_per_user
-      ON otp_requests(user_id) WHERE invalidated_at IS NULL
-  `);
-}
-
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-async function insertUser(status: 'pending' | 'active' | 'suspended'): Promise<{ id: string; email: string }> {
+function insertUser(status: 'pending' | 'active' | 'suspended'): { id: string; email: string } {
   const suffix = randomSuffix();
   const email = `${suffix}@example.test`;
-  const result = await pool.query(
-    `INSERT INTO users (username, username_normalised, email, password_hash, status)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id, email`,
-    [`user-${suffix}`, `user-${suffix}`, email, 'irrelevant-hash', status],
-  );
-  return result.rows[0];
+  const id = uuidv4();
+  db.prepare(
+    `INSERT INTO users (id, username, username_normalised, email, password_hash, status, registration_timestamp)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, `user-${suffix}`, `user-${suffix}`, email, 'irrelevant-hash', status, new Date().toISOString());
+  return { id, email };
 }
 
 beforeAll(async () => {
-  pool = new Pool();
+  testDb = createTestDb();
+  db = testDb.db;
   redis = new Redis(REDIS_URL);
-  await ensureDatabaseSchema(pool);
 
   deliveryPort = new RecordingDeliveryPort();
 
   app = express();
   app.use(express.json());
-  app.use('/api/v1/otp', createOtpRouter(pool, redis, deliveryPort));
+  app.use('/api/v1/otp', createOtpRouter(db, redis, deliveryPort));
 });
 
 afterEach(() => {
@@ -102,10 +68,8 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await pool.query('DELETE FROM otp_requests');
-  await pool.query('DELETE FROM users');
+  closeTestDb(testDb);
   await redis.quit();
-  await pool.end();
 });
 
 describe('Integration | OTP send and resend', () => {
@@ -125,14 +89,12 @@ describe('Integration | OTP send and resend', () => {
     expect(dispatchedCode).toMatch(/^\d{6}$/);
     expect(JSON.stringify(response.body)).not.toContain(dispatchedCode);
 
-    const otpRow = await pool.query(
-      'SELECT status, email_address, code_hash FROM otp_requests WHERE user_id = $1',
-      [user.id],
-    );
-    expect(otpRow.rowCount).toBe(1);
-    expect(otpRow.rows[0].status).toBe('delivered');
-    expect(otpRow.rows[0].email_address).toBe(user.email);
-    expect(otpRow.rows[0].code_hash).not.toBe(dispatchedCode);
+    const otpRow = db
+      .prepare('SELECT status, email_address, code_hash FROM otp_requests WHERE user_id = ?')
+      .get(user.id) as { status: string; email_address: string; code_hash: string };
+    expect(otpRow.status).toBe('delivered');
+    expect(otpRow.email_address).toBe(user.email);
+    expect(otpRow.code_hash).not.toBe(dispatchedCode);
 
     await redis.del(`otp:rl:${user.id}`);
   });
@@ -152,13 +114,12 @@ describe('Integration | OTP send and resend', () => {
     const secondCode = deliveryPort.dispatched[1].code;
     expect(secondCode).not.toBe(firstCode);
 
-    const rows = await pool.query(
-      'SELECT invalidated_at FROM otp_requests WHERE user_id = $1 ORDER BY created_at ASC',
-      [user.id],
-    );
-    expect(rows.rowCount).toBe(2);
-    expect(rows.rows[0].invalidated_at).not.toBeNull();
-    expect(rows.rows[1].invalidated_at).toBeNull();
+    const rows = db
+      .prepare('SELECT invalidated_at FROM otp_requests WHERE user_id = ? ORDER BY created_at ASC')
+      .all(user.id) as Array<{ invalidated_at: string | null }>;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].invalidated_at).not.toBeNull();
+    expect(rows[1].invalidated_at).toBeNull();
 
     await redis.del(`otp:rl:${user.id}`);
   });
@@ -236,12 +197,16 @@ describe('Integration | OTP verify', () => {
 
     expect(response.body).toMatchObject({ userId: user.id });
 
-    const userRow = await pool.query('SELECT status, activated_at FROM users WHERE id = $1', [user.id]);
-    expect(userRow.rows[0].status).toBe('active');
-    expect(userRow.rows[0].activated_at).not.toBeNull();
+    const userRow = db
+      .prepare('SELECT status, activated_at FROM users WHERE id = ?')
+      .get(user.id) as { status: string; activated_at: string | null };
+    expect(userRow.status).toBe('active');
+    expect(userRow.activated_at).not.toBeNull();
 
-    const otpRow = await pool.query('SELECT invalidated_at FROM otp_requests WHERE user_id = $1', [user.id]);
-    expect(otpRow.rows[0].invalidated_at).not.toBeNull();
+    const otpRow = db
+      .prepare('SELECT invalidated_at FROM otp_requests WHERE user_id = ?')
+      .get(user.id) as { invalidated_at: string | null };
+    expect(otpRow.invalidated_at).not.toBeNull();
 
     await redis.del(`otp:rl:${user.id}`);
   });
@@ -276,9 +241,9 @@ describe('Integration | OTP verify', () => {
     await request(app).post('/api/v1/otp/send').send({ userId: user.id }).expect(202);
     const code = deliveryPort.dispatched[deliveryPort.dispatched.length - 1].code;
 
-    await pool.query(
-      `UPDATE otp_requests SET expires_at = NOW() - INTERVAL '1 second' WHERE user_id = $1`,
-      [user.id],
+    db.prepare('UPDATE otp_requests SET expires_at = ? WHERE user_id = ?').run(
+      new Date(Date.now() - 1000).toISOString(),
+      user.id,
     );
 
     const response = await request(app)

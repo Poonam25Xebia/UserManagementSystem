@@ -2,12 +2,13 @@
  * otp-request.repository.ts
  *
  * Repository for the `otp_requests` table.  All queries use parameterised
- * `pg` placeholders — no string interpolation.
+ * `?` placeholders — no string interpolation.
  *
  * Requirements: US-002 FR-003, FR-006, FR-009
  */
 
-import { Pool, QueryResult } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import { OtpRequestEntity } from '../types/otp.types';
 
 // ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@ export interface IOtpRequestRepository {
 }
 
 // ---------------------------------------------------------------------------
-// Row type returned by pg
+// Row type returned by better-sqlite3
 // ---------------------------------------------------------------------------
 
 interface OtpRequestRow {
@@ -34,9 +35,9 @@ interface OtpRequestRow {
   email_address: string;
   code_hash: string;
   status: 'pending' | 'delivered' | 'failed';
-  created_at: Date;
-  expires_at: Date;
-  invalidated_at: Date | null;
+  created_at: string;
+  expires_at: string;
+  invalidated_at: string | null;
   attempt_sequence: number;
 }
 
@@ -51,9 +52,9 @@ function rowToEntity(row: OtpRequestRow): OtpRequestEntity {
     emailAddress: row.email_address,
     codeHash: row.code_hash,
     status: row.status,
-    createdAt: row.created_at,
-    expiresAt: row.expires_at,
-    invalidatedAt: row.invalidated_at,
+    createdAt: new Date(row.created_at),
+    expiresAt: new Date(row.expires_at),
+    invalidatedAt: row.invalidated_at === null ? null : new Date(row.invalidated_at),
     attemptSequence: row.attempt_sequence,
   };
 }
@@ -63,33 +64,35 @@ function rowToEntity(row: OtpRequestRow): OtpRequestEntity {
 // ---------------------------------------------------------------------------
 
 export class OtpRequestRepository implements IOtpRequestRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   /**
    * Insert a new OTP request row and return the persisted entity (with
    * generated id).
    */
   async create(record: Omit<OtpRequestEntity, 'id'>): Promise<OtpRequestEntity> {
-    const sql = `
-      INSERT INTO otp_requests
-        (user_id, email_address, code_hash, status, created_at, expires_at,
-         invalidated_at, attempt_sequence)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *
-    `;
+    const id = uuidv4();
+    this.db
+      .prepare(
+        `INSERT INTO otp_requests
+          (id, user_id, email_address, code_hash, status, created_at, expires_at,
+           invalidated_at, attempt_sequence)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        record.userId,
+        record.emailAddress,
+        record.codeHash,
+        record.status,
+        record.createdAt.toISOString(),
+        record.expiresAt.toISOString(),
+        record.invalidatedAt === null ? null : record.invalidatedAt.toISOString(),
+        record.attemptSequence,
+      );
 
-    const result: QueryResult<OtpRequestRow> = await this.pool.query(sql, [
-      record.userId,
-      record.emailAddress,
-      record.codeHash,
-      record.status,
-      record.createdAt,
-      record.expiresAt,
-      record.invalidatedAt,
-      record.attemptSequence,
-    ]);
-
-    return rowToEntity(result.rows[0]);
+    const row = this.db.prepare('SELECT * FROM otp_requests WHERE id = ?').get(id) as OtpRequestRow;
+    return rowToEntity(row);
   }
 
   /**
@@ -97,58 +100,34 @@ export class OtpRequestRepository implements IOtpRequestRepository {
    * Returns null if there is none (partial unique index enforces at most one).
    */
   async findActiveByUserId(userId: string): Promise<OtpRequestEntity | null> {
-    const sql = `
-      SELECT * FROM otp_requests
-      WHERE user_id = $1 AND invalidated_at IS NULL
-      LIMIT 1
-    `;
+    const row = this.db
+      .prepare('SELECT * FROM otp_requests WHERE user_id = ? AND invalidated_at IS NULL LIMIT 1')
+      .get(userId) as OtpRequestRow | undefined;
 
-    const result: QueryResult<OtpRequestRow> = await this.pool.query(sql, [userId]);
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    return rowToEntity(result.rows[0]);
+    return row === undefined ? null : rowToEntity(row);
   }
 
   /**
    * Mark any currently active OTP request(s) for a user as invalidated.
    */
   async invalidateActiveByUserId(userId: string): Promise<void> {
-    const sql = `
-      UPDATE otp_requests
-      SET invalidated_at = NOW()
-      WHERE user_id = $1 AND invalidated_at IS NULL
-    `;
-
-    await this.pool.query(sql, [userId]);
+    this.db
+      .prepare('UPDATE otp_requests SET invalidated_at = ? WHERE user_id = ? AND invalidated_at IS NULL')
+      .run(new Date().toISOString(), userId);
   }
 
   /**
    * Mark an OTP request as successfully delivered.
    */
   async markDelivered(id: string): Promise<void> {
-    const sql = `
-      UPDATE otp_requests
-      SET status = 'delivered'
-      WHERE id = $1
-    `;
-
-    await this.pool.query(sql, [id]);
+    this.db.prepare("UPDATE otp_requests SET status = 'delivered' WHERE id = ?").run(id);
   }
 
   /**
    * Mark an OTP request as failed to deliver.
    */
   async markFailed(id: string): Promise<void> {
-    const sql = `
-      UPDATE otp_requests
-      SET status = 'failed'
-      WHERE id = $1
-    `;
-
-    await this.pool.query(sql, [id]);
+    this.db.prepare("UPDATE otp_requests SET status = 'failed' WHERE id = ?").run(id);
   }
 
   /**
@@ -156,19 +135,11 @@ export class OtpRequestRepository implements IOtpRequestRepository {
    * Returns null if no match is found.
    */
   async findById(id: string): Promise<OtpRequestEntity | null> {
-    const sql = `
-      SELECT * FROM otp_requests
-      WHERE id = $1
-      LIMIT 1
-    `;
+    const row = this.db.prepare('SELECT * FROM otp_requests WHERE id = ? LIMIT 1').get(id) as
+      | OtpRequestRow
+      | undefined;
 
-    const result: QueryResult<OtpRequestRow> = await this.pool.query(sql, [id]);
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    return rowToEntity(result.rows[0]);
+    return row === undefined ? null : rowToEntity(row);
   }
 
   /**
@@ -176,14 +147,12 @@ export class OtpRequestRepository implements IOtpRequestRepository {
    * user, based on how many OTP requests have previously been issued to them.
    */
   async getNextAttemptSequence(userId: string): Promise<number> {
-    const sql = `
-      SELECT COALESCE(MAX(attempt_sequence), 0) + 1 AS next_sequence
-      FROM otp_requests
-      WHERE user_id = $1
-    `;
+    const row = this.db
+      .prepare(
+        'SELECT COALESCE(MAX(attempt_sequence), 0) + 1 AS next_sequence FROM otp_requests WHERE user_id = ?',
+      )
+      .get(userId) as { next_sequence: number };
 
-    const result: QueryResult<{ next_sequence: number }> = await this.pool.query(sql, [userId]);
-
-    return result.rows[0].next_sequence;
+    return row.next_sequence;
   }
 }

@@ -13,11 +13,12 @@ process.env.ACCOUNT_DELETION_REQUEST_EMAIL_TEMPLATE_ID = 'd-test-deletion-reques
 process.env.ACCOUNT_DELETION_NOTICE_EMAIL_TEMPLATE_ID = 'd-test-deletion-notice-template';
 
 import request from 'supertest';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { Redis } from 'ioredis';
 import { OtpDeliveryPort } from '../adapters/otp-delivery.port';
 import { EmailDeliveryPort } from '../adapters/email-delivery.port';
 import { DeliveryResult, EmailRecipient } from '../types/registration.types';
+import { createTestDb, clearAllTables, closeTestDb, TestDb } from './test-db';
 
 const TEST_PASSWORD = 'Passw0rd!';
 
@@ -55,47 +56,10 @@ class NoopEmailDeliveryPort implements EmailDeliveryPort {
 }
 
 let app: any;
-let pool: Pool;
+let testDb: TestDb;
+let db: Database;
 let otpRedisClient: Redis;
 let otpDeliveryPort: RecordingOtpDeliveryPort;
-
-async function ensureDatabaseSchema(pool: Pool): Promise<void> {
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      username VARCHAR(255) NOT NULL,
-      username_normalised VARCHAR(255) NOT NULL,
-      email VARCHAR(320) NOT NULL,
-      password_hash VARCHAR(72) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'suspended')),
-      registration_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      activated_at TIMESTAMPTZ NULL
-    )
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS otp_requests (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      email_address VARCHAR(320) NOT NULL,
-      code_hash VARCHAR(256) NOT NULL,
-      status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'failed')),
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      expires_at TIMESTAMPTZ NOT NULL,
-      invalidated_at TIMESTAMPTZ NULL,
-      attempt_sequence SMALLINT NOT NULL
-    )
-  `);
-
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_users_username_normalised ON users(username_normalised)`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_users_email ON users(email)`);
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uidx_otp_requests_active_per_user
-      ON otp_requests(user_id) WHERE invalidated_at IS NULL
-  `);
-}
 
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -112,27 +76,22 @@ function registrationPayload(overrides: Partial<Record<string, string>> = {}) {
   };
 }
 
-async function clearTables(): Promise<void> {
-  await pool.query('DELETE FROM otp_requests');
-  await pool.query('DELETE FROM users');
-}
-
 beforeAll(async () => {
-  pool = new Pool();
+  testDb = createTestDb();
+  db = testDb.db;
   otpRedisClient = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
-  await ensureDatabaseSchema(pool);
   otpDeliveryPort = new RecordingOtpDeliveryPort();
   const appModule = await import('../app');
-  app = appModule.createApp(pool, otpRedisClient, otpDeliveryPort, new NoopEmailDeliveryPort());
+  app = appModule.createApp(db, otpRedisClient, otpDeliveryPort, new NoopEmailDeliveryPort());
 });
 
 afterEach(async () => {
-  await clearTables();
+  clearAllTables(db);
   otpDeliveryPort.dispatched = [];
 });
 
 afterAll(async () => {
-  await pool.end();
+  closeTestDb(testDb);
   await otpRedisClient.quit();
 });
 
@@ -147,23 +106,20 @@ describe('Integration | Registration and activation', () => {
     expect(response.body).toHaveProperty('userId');
     const userId = response.body.userId;
 
-    const userResult = await pool.query(
-      'SELECT username, email, status FROM users WHERE id = $1',
-      [userId],
-    );
-    expect(userResult.rowCount).toBe(1);
-    expect(userResult.rows[0]).toMatchObject({
+    const userRow = db
+      .prepare('SELECT username, email, status FROM users WHERE id = ?')
+      .get(userId) as { username: string; email: string; status: string } | undefined;
+    expect(userRow).toMatchObject({
       username: payload.username,
       email: payload.emailAddress,
       status: 'pending',
     });
 
-    const otpResult = await pool.query(
-      'SELECT status, expires_at, created_at FROM otp_requests WHERE user_id = $1',
-      [userId],
-    );
-    expect(otpResult.rowCount).toBe(1);
-    expect(otpResult.rows[0].status).toBe('delivered');
+    const otpRow = db
+      .prepare('SELECT status, expires_at, created_at FROM otp_requests WHERE user_id = ?')
+      .get(userId) as { status: string } | undefined;
+    expect(otpRow).toBeDefined();
+    expect(otpRow!.status).toBe('delivered');
 
     expect(otpDeliveryPort.dispatched).toHaveLength(1);
     expect(otpDeliveryPort.dispatched[0].destination).toBe(payload.emailAddress);
@@ -255,17 +211,16 @@ describe('Integration | Registration and activation', () => {
 
     expect(verifyResponse.body).toHaveProperty('userId', userId);
 
-    const userRow = await pool.query('SELECT status, activated_at FROM users WHERE id = $1', [userId]);
-    expect(userRow.rowCount).toBe(1);
-    expect(userRow.rows[0].status).toBe('active');
-    expect(userRow.rows[0].activated_at).not.toBeNull();
+    const userRow = db
+      .prepare('SELECT status, activated_at FROM users WHERE id = ?')
+      .get(userId) as { status: string; activated_at: string | null };
+    expect(userRow.status).toBe('active');
+    expect(userRow.activated_at).not.toBeNull();
 
-    const otpRow = await pool.query(
-      'SELECT invalidated_at FROM otp_requests WHERE user_id = $1',
-      [userId],
-    );
-    expect(otpRow.rowCount).toBe(1);
-    expect(otpRow.rows[0].invalidated_at).not.toBeNull();
+    const otpRow = db
+      .prepare('SELECT invalidated_at FROM otp_requests WHERE user_id = ?')
+      .get(userId) as { invalidated_at: string | null };
+    expect(otpRow.invalidated_at).not.toBeNull();
   });
 
   test('POST /api/v1/otp/verify returns 410 for an expired OTP', async () => {
@@ -278,11 +233,9 @@ describe('Integration | Registration and activation', () => {
     const userId = registerResponse.body.userId;
     const code = otpDeliveryPort.codeFor(payload.emailAddress);
 
-    await pool.query(
-      `UPDATE otp_requests
-       SET expires_at = NOW() - INTERVAL '1 second'
-       WHERE user_id = $1`,
-      [userId],
+    db.prepare('UPDATE otp_requests SET expires_at = ? WHERE user_id = ?').run(
+      new Date(Date.now() - 1000).toISOString(),
+      userId,
     );
 
     const verifyResponse = await request(app)

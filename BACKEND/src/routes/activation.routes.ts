@@ -7,20 +7,20 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { TokenRepository } from '../repositories/token.repository';
 import { UserRepository } from '../repositories/user.repository';
 import { DefaultActivationService } from '../services/activation.service';
 import { ActivationController } from '../controllers/activation.controller';
 
-export function createActivationRouter(pool: Pool): Router {
+export function createActivationRouter(db: Database): Router {
   const router = Router();
 
   const controller = new ActivationController(
     new DefaultActivationService(
-      new TokenRepository(pool),
-      new UserRepository(pool),
-      pool,
+      new TokenRepository(db),
+      new UserRepository(db),
+      db,
     ),
   );
 

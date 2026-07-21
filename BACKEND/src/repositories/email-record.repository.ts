@@ -2,12 +2,13 @@
  * email-record.repository.ts
  *
  * Repository for the `registration_email_records` table (transactional outbox).
- * All queries use parameterised `pg` placeholders — no string interpolation.
+ * All queries use parameterised `?` placeholders — no string interpolation.
  *
  * Requirements: US-073 FR-007–009
  */
 
-import { Pool, QueryResult } from 'pg';
+import type { Database } from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import { RegistrationEmailRecord } from '../types/registration.types';
 
 // ---------------------------------------------------------------------------
@@ -30,14 +31,14 @@ export interface IEmailRecordRepository {
 }
 
 // ---------------------------------------------------------------------------
-// Row type returned by pg
+// Row type returned by better-sqlite3
 // ---------------------------------------------------------------------------
 
 interface EmailRecordRow {
   record_id: string;
   user_id: string;
   recipient_address: string;
-  dispatch_timestamp: Date;
+  dispatch_timestamp: string;
   delivery_status: 'queued' | 'sent' | 'failed';
   retry_count: number;
   activation_token_id: string;
@@ -52,7 +53,7 @@ function rowToEntity(row: EmailRecordRow): RegistrationEmailRecord {
     recordId: row.record_id,
     userId: row.user_id,
     recipientAddress: row.recipient_address,
-    dispatchTimestamp: row.dispatch_timestamp,
+    dispatchTimestamp: new Date(row.dispatch_timestamp),
     deliveryStatus: row.delivery_status,
     retryCount: row.retry_count,
     activationTokenId: row.activation_token_id,
@@ -64,7 +65,7 @@ function rowToEntity(row: EmailRecordRow): RegistrationEmailRecord {
 // ---------------------------------------------------------------------------
 
 export class EmailRecordRepository implements IEmailRecordRepository {
-  constructor(private readonly pool: Pool) {}
+  constructor(private readonly db: Database) {}
 
   /**
    * Insert a new outbox record and return the persisted entity (with
@@ -73,24 +74,28 @@ export class EmailRecordRepository implements IEmailRecordRepository {
   async insert(
     record: Omit<RegistrationEmailRecord, 'recordId'>,
   ): Promise<RegistrationEmailRecord> {
-    const sql = `
-      INSERT INTO registration_email_records
-        (user_id, recipient_address, dispatch_timestamp, delivery_status,
-         retry_count, activation_token_id)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *
-    `;
+    const recordId = uuidv4();
+    this.db
+      .prepare(
+        `INSERT INTO registration_email_records
+          (record_id, user_id, recipient_address, dispatch_timestamp, delivery_status,
+           retry_count, activation_token_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        recordId,
+        record.userId,
+        record.recipientAddress,
+        record.dispatchTimestamp.toISOString(),
+        record.deliveryStatus,
+        record.retryCount,
+        record.activationTokenId,
+      );
 
-    const result: QueryResult<EmailRecordRow> = await this.pool.query(sql, [
-      record.userId,
-      record.recipientAddress,
-      record.dispatchTimestamp,
-      record.deliveryStatus,
-      record.retryCount,
-      record.activationTokenId,
-    ]);
-
-    return rowToEntity(result.rows[0]);
+    const row = this.db
+      .prepare('SELECT * FROM registration_email_records WHERE record_id = ?')
+      .get(recordId) as EmailRecordRow;
+    return rowToEntity(row);
   }
 
   /**
@@ -100,15 +105,13 @@ export class EmailRecordRepository implements IEmailRecordRepository {
   async findByStatus(
     status: 'queued' | 'sent' | 'failed',
   ): Promise<RegistrationEmailRecord[]> {
-    const sql = `
-      SELECT * FROM registration_email_records
-      WHERE delivery_status = $1
-      ORDER BY dispatch_timestamp ASC
-    `;
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM registration_email_records WHERE delivery_status = ? ORDER BY dispatch_timestamp ASC',
+      )
+      .all(status) as EmailRecordRow[];
 
-    const result: QueryResult<EmailRecordRow> = await this.pool.query(sql, [status]);
-
-    return result.rows.map(rowToEntity);
+    return rows.map(rowToEntity);
   }
 
   /**
@@ -116,19 +119,11 @@ export class EmailRecordRepository implements IEmailRecordRepository {
    * Returns null if not found (UNIQUE constraint enforces one per user).
    */
   async findByUserId(userId: string): Promise<RegistrationEmailRecord | null> {
-    const sql = `
-      SELECT * FROM registration_email_records
-      WHERE user_id = $1
-      LIMIT 1
-    `;
+    const row = this.db
+      .prepare('SELECT * FROM registration_email_records WHERE user_id = ? LIMIT 1')
+      .get(userId) as EmailRecordRow | undefined;
 
-    const result: QueryResult<EmailRecordRow> = await this.pool.query(sql, [userId]);
-
-    if (result.rows.length === 0) {
-      return null;
-    }
-
-    return rowToEntity(result.rows[0]);
+    return row === undefined ? null : rowToEntity(row);
   }
 
   /**
@@ -138,13 +133,9 @@ export class EmailRecordRepository implements IEmailRecordRepository {
     recordId: string,
     status: 'queued' | 'sent' | 'failed',
   ): Promise<void> {
-    const sql = `
-      UPDATE registration_email_records
-      SET delivery_status = $1
-      WHERE record_id = $2
-    `;
-
-    await this.pool.query(sql, [status, recordId]);
+    this.db
+      .prepare('UPDATE registration_email_records SET delivery_status = ? WHERE record_id = ?')
+      .run(status, recordId);
   }
 
   /**
@@ -152,12 +143,10 @@ export class EmailRecordRepository implements IEmailRecordRepository {
    * record_id.
    */
   async incrementRetryCount(recordId: string): Promise<void> {
-    const sql = `
-      UPDATE registration_email_records
-      SET retry_count = retry_count + 1
-      WHERE record_id = $1
-    `;
-
-    await this.pool.query(sql, [recordId]);
+    this.db
+      .prepare(
+        'UPDATE registration_email_records SET retry_count = retry_count + 1 WHERE record_id = ?',
+      )
+      .run(recordId);
   }
 }

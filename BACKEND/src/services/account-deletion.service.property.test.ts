@@ -15,7 +15,7 @@ process.env.ACCOUNT_DELETION_NOTICE_EMAIL_TEMPLATE_ID = 'd-test-deletion-notice-
 
 import crypto from 'crypto';
 import fc from 'fast-check';
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { DefaultAccountDeletionService } from './account-deletion.service';
 import { IUserRepository } from '../repositories/user.repository';
 import { IDeletionRequestRepository } from '../repositories/deletion-request.repository';
@@ -144,43 +144,46 @@ const noOpNotificationPort: EmailDeliveryPort = {
 };
 
 /**
- * Fake pg Pool/PoolClient that actually applies confirmDeletion's raw SQL
+ * Fake better-sqlite3 Database that actually applies confirmDeletion's SQL
  * writes to the same in-memory fakes, so property assertions can observe
- * the post-transaction state exactly as a real Postgres commit would leave it.
+ * the post-transaction state exactly as a real SQLite commit would leave it.
  */
-function buildFakePool(
+function buildFakeDb(
   usersById: Map<string, UserEntity>,
   notificationRecordRepository: FakeDeletionNotificationRecordRepository,
   deletionRequestRepository: FakeDeletionRequestRepository,
-): Pool {
-  const client = {
-    query: jest.fn(async (sql: string, params: unknown[] = []) => {
+): Database {
+  const prepare = jest.fn((sql: string) => ({
+    run: (...params: unknown[]) => {
       if (sql.includes('UPDATE users')) {
         const [anonymizedEmail, anonymizedUsername, usernameNormalised, deletedAt, userId] =
-          params as [string, string, string, Date, string];
+          params as [string, string, string, string, string];
         const user = usersById.get(userId);
         if (user) {
           user.status = 'deleted';
           user.email = anonymizedEmail;
           user.username = anonymizedUsername;
           user.usernameNormalised = usernameNormalised;
-          user.deletedAt = deletedAt;
+          user.deletedAt = new Date(deletedAt);
         }
       } else if (sql.includes('UPDATE account_deletion_requests')) {
-        const [confirmedAt, requestId] = params as [Date, string];
-        await deletionRequestRepository.updateStatus(requestId, 'confirmed', confirmedAt);
+        const [confirmedAt, requestId] = params as [string, string];
+        void deletionRequestRepository.updateStatus(requestId, 'confirmed', new Date(confirmedAt));
       } else if (sql.includes('INSERT INTO account_deletion_notification_records')) {
-        const [userId, recipientAddress, deletionDate] = params as [string, string, Date];
-        await notificationRecordRepository.insert(userId, recipientAddress, deletionDate);
+        const [, userId, recipientAddress, deletionDate] = params as [
+          string,
+          string,
+          string,
+          string,
+          string,
+        ];
+        void notificationRecordRepository.insert(userId, recipientAddress, new Date(deletionDate));
       }
-      return { rows: [] };
-    }),
-    release: jest.fn(),
-  } as unknown as PoolClient;
+    },
+  }));
+  const transaction = jest.fn((fn: () => unknown) => () => fn());
 
-  return {
-    connect: jest.fn(async () => client),
-  } as unknown as Pool;
+  return { prepare, transaction } as unknown as Database;
 }
 
 function buildUser(overrides: Partial<UserEntity> = {}): UserEntity {
@@ -215,7 +218,7 @@ describe('DefaultAccountDeletionService — property tests', () => {
         const userRepository = new FakeUserRepository(usersById);
         const deletionRequestRepository = new FakeDeletionRequestRepository();
         const notificationRecordRepository = new FakeDeletionNotificationRecordRepository();
-        const pool = buildFakePool(usersById, notificationRecordRepository, deletionRequestRepository);
+        const db = buildFakeDb(usersById, notificationRecordRepository, deletionRequestRepository);
 
         const code = '123456';
         await deletionRequestRepository.insert(
@@ -229,7 +232,7 @@ describe('DefaultAccountDeletionService — property tests', () => {
           userRepository,
           deletionRequestRepository,
           noOpNotificationPort,
-          pool,
+          db,
         );
 
         let successCount = 0;
@@ -263,7 +266,7 @@ describe('DefaultAccountDeletionService — property tests', () => {
         const userRepository = new FakeUserRepository(usersById);
         const deletionRequestRepository = new FakeDeletionRequestRepository();
         const notificationRecordRepository = new FakeDeletionNotificationRecordRepository();
-        const pool = buildFakePool(usersById, notificationRecordRepository, deletionRequestRepository);
+        const db = buildFakeDb(usersById, notificationRecordRepository, deletionRequestRepository);
 
         const code = `${Math.floor(Math.random() * 1_000_000)}`.padStart(6, '0');
         const issuedAt = new Date();
@@ -278,7 +281,7 @@ describe('DefaultAccountDeletionService — property tests', () => {
           userRepository,
           deletionRequestRepository,
           noOpNotificationPort,
-          pool,
+          db,
         );
 
         await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, 5)));
@@ -311,7 +314,7 @@ describe('DefaultAccountDeletionService — property tests', () => {
           const userRepository = new FakeUserRepository(usersById);
           const deletionRequestRepository = new FakeDeletionRequestRepository();
           const notificationRecordRepository = new FakeDeletionNotificationRecordRepository();
-          const pool = buildFakePool(usersById, notificationRecordRepository, deletionRequestRepository);
+          const db = buildFakeDb(usersById, notificationRecordRepository, deletionRequestRepository);
 
           const code = `${Math.floor(Math.random() * 1_000_000)}`.padStart(6, '0');
           await deletionRequestRepository.insert(
@@ -325,7 +328,7 @@ describe('DefaultAccountDeletionService — property tests', () => {
             userRepository,
             deletionRequestRepository,
             noOpNotificationPort,
-            pool,
+            db,
           );
 
           await service.confirmDeletion(user.id, code);

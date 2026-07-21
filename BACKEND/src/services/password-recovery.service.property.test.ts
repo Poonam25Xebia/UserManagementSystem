@@ -16,7 +16,7 @@ process.env.PASSWORD_RECOVERY_EMAIL_TEMPLATE_ID = 'd-test-recovery-template';
  */
 
 import fc from 'fast-check';
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { DefaultPasswordRecoveryService } from './password-recovery.service';
 import { IUserRepository } from '../repositories/user.repository';
 import { IPasswordRecoveryRequestRepository } from '../repositories/password-recovery-request.repository';
@@ -114,22 +114,18 @@ const noOpHasher: PasswordHasher = {
   compare: async () => true,
 };
 
-/** Fake pg Pool/PoolClient that records every UPDATE statement issued. */
-function buildFakePool(): { pool: Pool; queries: string[] } {
+/** Fake better-sqlite3 Database that records every SQL statement prepared. */
+function buildFakeDb(): { db: Database; queries: string[] } {
   const queries: string[] = [];
-  const client = {
-    query: jest.fn(async (sql: string) => {
-      queries.push(sql);
-      return { rows: [] };
-    }),
-    release: jest.fn(),
-  } as unknown as PoolClient;
+  const prepare = jest.fn((sql: string) => {
+    queries.push(sql);
+    return { run: jest.fn(), get: jest.fn(), all: jest.fn() };
+  });
+  const transaction = jest.fn((fn: () => unknown) => () => fn());
 
-  const pool = {
-    connect: jest.fn(async () => client),
-  } as unknown as Pool;
+  const db = { prepare, transaction } as unknown as Database;
 
-  return { pool, queries };
+  return { db, queries };
 }
 
 function buildUser(overrides: Partial<UserEntity> = {}): UserEntity {
@@ -169,7 +165,7 @@ describe('DefaultPasswordRecoveryService — property tests', () => {
 
         const userRepository = new FakeUserRepository(usersByEmail);
         const recoveryRequestRepository = new FakeRecoveryRequestRepository();
-        const { pool } = buildFakePool();
+        const { db } = buildFakeDb();
 
         const service = new DefaultPasswordRecoveryService(
           userRepository,
@@ -177,7 +173,7 @@ describe('DefaultPasswordRecoveryService — property tests', () => {
           new DefaultPasswordPolicyEvaluator(),
           noOpHasher,
           noOpNotificationPort,
-          pool,
+          db,
         );
 
         // Neither branch throws — this is the property that lets the
@@ -199,7 +195,7 @@ describe('DefaultPasswordRecoveryService — property tests', () => {
         const user = buildUser();
         const userRepository = new FakeUserRepository(new Map([[user.email, user]]));
         const recoveryRequestRepository = new FakeRecoveryRequestRepository();
-        const { pool } = buildFakePool();
+        const { db } = buildFakeDb();
 
         const token = 'fixed-token-value';
         await recoveryRequestRepository.insert(user.id, token, new Date(), new Date(Date.now() + 60 * 60 * 1000));
@@ -210,7 +206,7 @@ describe('DefaultPasswordRecoveryService — property tests', () => {
           new DefaultPasswordPolicyEvaluator(),
           noOpHasher,
           noOpNotificationPort,
-          pool,
+          db,
         );
 
         let successCount = 0;
@@ -251,7 +247,7 @@ describe('DefaultPasswordRecoveryService — property tests', () => {
           const user = buildUser();
           const userRepository = new FakeUserRepository(new Map([[user.email, user]]));
           const recoveryRequestRepository = new FakeRecoveryRequestRepository();
-          const { pool, queries } = buildFakePool();
+          const { db, queries } = buildFakeDb();
 
           const token = 'fixed-token-value';
           await recoveryRequestRepository.insert(
@@ -267,7 +263,7 @@ describe('DefaultPasswordRecoveryService — property tests', () => {
             new DefaultPasswordPolicyEvaluator(),
             noOpHasher,
             noOpNotificationPort,
-            pool,
+            db,
           );
 
           await expect(service.resetPassword(token, shortPassword)).rejects.toThrow();

@@ -6,7 +6,7 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { Redis } from 'ioredis';
 import { DefaultRegistrationValidator } from '../validators/registration.validator';
 import { DefaultEmailValidator } from '../validators/email.validator';
@@ -22,31 +22,31 @@ import { RegistrationController } from '../controllers/registration.controller';
 
 /**
  * Create and return the registration router.
- * @param pool - Shared pg connection pool injected from app.ts / server.ts.
+ * @param db - Shared SQLite connection injected from app.ts / server.ts.
  * @param redis - Shared Redis client (OTP rate-limit guard), owned by server.ts.
  * @param otpDeliveryPort - Shared OTP email delivery adapter, owned by server.ts.
  */
 export function createRegistrationRouter(
-  pool: Pool,
+  db: Database,
   redis: Redis,
   otpDeliveryPort: OtpDeliveryPort,
 ): Router {
   const router = Router();
 
-  const userRepo = new UserRepository(pool);
+  const userRepo = new UserRepository(db);
   const otpService = new DefaultOtpService(
     userRepo,
-    new OtpRequestRepository(pool),
+    new OtpRequestRepository(db),
     new RedisRateLimitGuard(redis),
     otpDeliveryPort,
-    pool,
+    db,
   );
   const controller = new RegistrationController(
     new DefaultRegistrationValidator(),
     new DefaultEmailValidator(),
     new DefaultPasswordPolicyEvaluator(),
     new DefaultUsernameUniquenessValidator(userRepo),
-    new DefaultRegistrationService(pool),
+    new DefaultRegistrationService(db),
     otpService,
   );
 

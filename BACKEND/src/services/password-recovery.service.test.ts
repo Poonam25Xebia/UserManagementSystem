@@ -5,7 +5,7 @@ process.env.SENDGRID_TEMPLATE_ID = 'd-test-template';
 process.env.PASSWORD_RECOVERY_BASE_URL = 'https://app.example.test';
 process.env.PASSWORD_RECOVERY_EMAIL_TEMPLATE_ID = 'd-test-recovery-template';
 
-import { Pool, PoolClient } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { DefaultPasswordRecoveryService } from './password-recovery.service';
 import { IUserRepository } from '../repositories/user.repository';
 import { IPasswordRecoveryRequestRepository } from '../repositories/password-recovery-request.repository';
@@ -51,14 +51,39 @@ function buildRequest(overrides: Partial<PasswordRecoveryRequestEntity> = {}): P
   };
 }
 
+function buildMockDb() {
+  const calls: { sql: string; params: unknown[] }[] = [];
+  let failAtCallIndex: number | null = null;
+  const prepare = jest.fn((sql: string) => ({
+    run: (...params: unknown[]) => {
+      const index = calls.length;
+      calls.push({ sql, params });
+      if (failAtCallIndex !== null && index === failAtCallIndex) {
+        throw new Error('DB write failed');
+      }
+    },
+    get: jest.fn(),
+    all: jest.fn(),
+  }));
+  const transaction = jest.fn((fn: () => unknown) => () => fn());
+  const db = { prepare, transaction } as unknown as jest.Mocked<Database>;
+  return {
+    db,
+    calls,
+    transaction,
+    failAt: (index: number) => {
+      failAtCallIndex = index;
+    },
+  };
+}
+
 describe('DefaultPasswordRecoveryService', () => {
   let userRepository: jest.Mocked<IUserRepository>;
   let recoveryRequestRepository: jest.Mocked<IPasswordRecoveryRequestRepository>;
   let passwordPolicyEvaluator: jest.Mocked<PasswordPolicyEvaluator>;
   let passwordHasher: jest.Mocked<PasswordHasher>;
   let notificationPort: jest.Mocked<EmailDeliveryPort>;
-  let mockClient: jest.Mocked<PoolClient>;
-  let pool: jest.Mocked<Pool>;
+  let mockDb: ReturnType<typeof buildMockDb>;
   let service: DefaultPasswordRecoveryService;
 
   beforeEach(() => {
@@ -84,14 +109,7 @@ describe('DefaultPasswordRecoveryService', () => {
     passwordHasher = { hash: jest.fn(), compare: jest.fn() };
     notificationPort = { sendTransactional: jest.fn() };
 
-    mockClient = {
-      query: jest.fn().mockResolvedValue({ rows: [] }),
-      release: jest.fn(),
-    } as unknown as jest.Mocked<PoolClient>;
-
-    pool = {
-      connect: jest.fn().mockResolvedValue(mockClient),
-    } as unknown as jest.Mocked<Pool>;
+    mockDb = buildMockDb();
 
     service = new DefaultPasswordRecoveryService(
       userRepository,
@@ -99,7 +117,7 @@ describe('DefaultPasswordRecoveryService', () => {
       passwordPolicyEvaluator,
       passwordHasher,
       notificationPort,
-      pool,
+      mockDb.db,
     );
   });
 
@@ -146,7 +164,7 @@ describe('DefaultPasswordRecoveryService', () => {
       await expect(service.resetPassword('unknown-token', 'NewP@ss1')).rejects.toBeInstanceOf(
         TokenNotFoundException,
       );
-      expect(pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     test('expired token -> TokenExpiredException (410, not 400)', async () => {
@@ -157,7 +175,7 @@ describe('DefaultPasswordRecoveryService', () => {
       await expect(service.resetPassword('expired-token', 'NewP@ss1')).rejects.toBeInstanceOf(
         TokenExpiredException,
       );
-      expect(pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     test('already-consumed token -> TokenExpiredException', async () => {
@@ -166,7 +184,7 @@ describe('DefaultPasswordRecoveryService', () => {
       await expect(service.resetPassword('consumed-token', 'NewP@ss1')).rejects.toBeInstanceOf(
         TokenExpiredException,
       );
-      expect(pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     test('policy-violating password -> PasswordPolicyViolationException, no DB write', async () => {
@@ -180,7 +198,7 @@ describe('DefaultPasswordRecoveryService', () => {
         PasswordPolicyViolationException,
       );
       expect(passwordHasher.hash).not.toHaveBeenCalled();
-      expect(pool.connect).not.toHaveBeenCalled();
+      expect(mockDb.transaction).not.toHaveBeenCalled();
     });
 
     test('successful reset updates password hash, marks token consumed, and invalidates all sessions atomically', async () => {
@@ -191,21 +209,17 @@ describe('DefaultPasswordRecoveryService', () => {
 
       await service.resetPassword('valid-token', 'NewP@ss1');
 
-      expect(mockClient.query).toHaveBeenCalledWith('BEGIN');
-      expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE users SET password_hash'),
-        ['new-hash-value', 'user-42'],
+      expect(mockDb.transaction).toHaveBeenCalled();
+      const userUpdateCall = mockDb.calls.find((c) => c.sql.includes('UPDATE users SET password_hash'));
+      expect(userUpdateCall?.params).toEqual(['new-hash-value', 'user-42']);
+
+      const requestUpdateCall = mockDb.calls.find((c) =>
+        c.sql.includes('UPDATE password_recovery_requests SET consumed'),
       );
-      expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE password_recovery_requests SET consumed'),
-        expect.arrayContaining([expect.any(Date), 'request-42']),
-      );
-      expect(mockClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE sessions SET invalidated'),
-        expect.arrayContaining([expect.any(Date), 'user-42']),
-      );
-      expect(mockClient.query).toHaveBeenCalledWith('COMMIT');
-      expect(mockClient.release).toHaveBeenCalledTimes(1);
+      expect(requestUpdateCall?.params).toEqual(expect.arrayContaining([expect.any(String), 'request-42']));
+
+      const sessionUpdateCall = mockDb.calls.find((c) => c.sql.includes('UPDATE sessions SET invalidated'));
+      expect(sessionUpdateCall?.params).toEqual(expect.arrayContaining([expect.any(String), 'user-42']));
     });
 
     test('mid-transaction failure rolls back and leaves no partial state', async () => {
@@ -214,21 +228,14 @@ describe('DefaultPasswordRecoveryService', () => {
       passwordPolicyEvaluator.evaluate.mockReturnValue({ valid: true, violations: [] });
       passwordHasher.hash.mockResolvedValue('new-hash-value');
 
-      mockClient.query = jest
-        .fn()
-        .mockImplementationOnce(async () => ({ rows: [] })) // BEGIN
-        .mockImplementationOnce(async () => ({ rows: [] })) // UPDATE users
-        .mockImplementationOnce(async () => {
-          throw new Error('DB write failed');
-        }); // UPDATE password_recovery_requests fails
+      mockDb.failAt(1); // UPDATE password_recovery_requests (2nd statement) fails
 
       await expect(service.resetPassword('valid-token', 'NewP@ss1')).rejects.toThrow(
         'DB write failed',
       );
 
-      expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
-      expect(mockClient.query).not.toHaveBeenCalledWith('COMMIT');
-      expect(mockClient.release).toHaveBeenCalledTimes(1);
+      const sessionUpdateCall = mockDb.calls.find((c) => c.sql.includes('UPDATE sessions SET invalidated'));
+      expect(sessionUpdateCall).toBeUndefined();
     });
   });
 });

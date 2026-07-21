@@ -13,7 +13,7 @@
  */
 
 import { Router } from 'express';
-import { Pool } from 'pg';
+import type { Database } from 'better-sqlite3';
 import { UserRepository } from '../repositories/user.repository';
 import { SessionRepository } from '../repositories/session.repository';
 import { DefaultUserProfileService } from '../services/user-profile.service';
@@ -21,11 +21,11 @@ import { UserProfileController } from '../controllers/user-profile.controller';
 import { SessionService } from '../services/session.service';
 import { createSessionValidationMiddleware } from '../middleware/session-validation.middleware';
 
-export function createUserProfileRouter(pool: Pool, sessionService: SessionService): Router {
+export function createUserProfileRouter(db: Database, sessionService: SessionService): Router {
   const router = Router();
 
   const controller = new UserProfileController(
-    new DefaultUserProfileService(new UserRepository(pool), new SessionRepository(pool)),
+    new DefaultUserProfileService(new UserRepository(db), new SessionRepository(db)),
   );
 
   const requireSession = createSessionValidationMiddleware(sessionService);
