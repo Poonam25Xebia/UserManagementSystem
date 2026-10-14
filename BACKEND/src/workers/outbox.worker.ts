@@ -10,6 +10,8 @@
  *  - On failure:
  *      retryCount < maxRetries → increment retry_count (stay 'queued')
  *      retryCount >= maxRetries → delivery_status → 'failed' + structured log
+ *  - Each poll emits single-line JSON logs via outbox-logger.ts:
+ *      one `outbox.poll.depth` per poll, one `outbox.record.processed` per attempt.
  *  - stop() clears the interval for clean shutdown.
  *
  * Requirements: US-073 FR-002, FR-008–009, FR-012
@@ -20,6 +22,8 @@ import { IEmailRecordRepository } from '../repositories/email-record.repository'
 import { ITokenRepository } from '../repositories/token.repository';
 import { IUserRepository } from '../repositories/user.repository';
 import { appConfig } from '../config/app.config';
+import * as outboxLogger from './outbox-logger';
+import { OutboxRecordOutcome } from './outbox-logger';
 
 export interface IOutboxWorker {
   start(intervalMs?: number): void;
@@ -29,6 +33,7 @@ export interface IOutboxWorker {
 
 export class OutboxWorker implements IOutboxWorker {
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
+  private pollIntervalMs: number = appConfig.outboxPollIntervalMs;
 
   constructor(
     private readonly emailRecordRepository: IEmailRecordRepository,
@@ -45,6 +50,7 @@ export class OutboxWorker implements IOutboxWorker {
     if (this.intervalHandle !== null) {
       return; // already running
     }
+    this.pollIntervalMs = intervalMs;
     this.intervalHandle = setInterval(() => {
       void this.processQueuedRecords();
     }, intervalMs);
@@ -63,11 +69,20 @@ export class OutboxWorker implements IOutboxWorker {
   /**
    * Process all currently queued outbox records.
    * Called on each polling tick and can also be called directly in tests.
+   *
+   * Emits one `outbox.poll.depth` entry per call and exactly one
+   * `outbox.record.processed` entry per record attempt (see outbox-logger.ts).
    */
   async processQueuedRecords(): Promise<void> {
+    const queuedCount = await this.emailRecordRepository.countByStatus('queued');
+    outboxLogger.emitPollDepth(queuedCount, { pollIntervalMs: this.pollIntervalMs });
+
     const records = await this.emailRecordRepository.findByStatus('queued');
 
     for (const record of records) {
+      let outcome: OutboxRecordOutcome | undefined;
+      let retryCount = record.retryCount;
+      const startedAt = process.hrtime.bigint();
       try {
         // Resolve token value and user display name
         const token = await this.tokenRepository.findByUserId(record.userId);
@@ -79,6 +94,7 @@ export class OutboxWorker implements IOutboxWorker {
             recordId: record.recordId,
           });
           await this.emailRecordRepository.updateStatus(record.recordId, 'failed');
+          outcome = 'failed';
           continue;
         }
 
@@ -95,35 +111,61 @@ export class OutboxWorker implements IOutboxWorker {
 
         if (result.success) {
           await this.emailRecordRepository.updateStatus(record.recordId, 'sent');
+          outcome = 'sent';
         } else {
-          await this._handleFailure(record.recordId, record.retryCount, record.userId, result.error);
+          ({ outcome, retryCount } = await this._handleFailure(
+            record.recordId,
+            record.retryCount,
+            record.userId,
+            result.error,
+          ));
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        await this._handleFailure(record.recordId, record.retryCount, record.userId, msg);
+        ({ outcome, retryCount } = await this._handleFailure(
+          record.recordId,
+          record.retryCount,
+          record.userId,
+          msg,
+        ));
+      } finally {
+        const elapsedNs = process.hrtime.bigint() - startedAt;
+        const durationMs = elapsedNs > 0n ? Number(elapsedNs / 1_000_000n) : 0;
+        // outcome is only undefined if persisting the outcome itself threw;
+        // that error propagates as before and no outcome can be claimed.
+        if (outcome !== undefined) {
+          outboxLogger.emitRecordProcessed({
+            record_id: record.recordId,
+            outcome,
+            retry_count: retryCount,
+            duration_ms: durationMs,
+          });
+        }
       }
     }
   }
 
   /**
    * Increment retry count or permanently mark a record as failed.
+   * Returns the resulting outcome and the retry_count now stored for the record.
    */
   private async _handleFailure(
     recordId: string,
     currentRetryCount: number,
     userId: string,
     error?: string,
-  ): Promise<void> {
+  ): Promise<{ outcome: OutboxRecordOutcome; retryCount: number }> {
     if (currentRetryCount < appConfig.outboxMaxRetries) {
       await this.emailRecordRepository.incrementRetryCount(recordId);
-    } else {
-      await this.emailRecordRepository.updateStatus(recordId, 'failed');
-      // Structured failure log — FR-012
-      console.error('[OutboxWorker] Email delivery permanently failed', {
-        recordId,
-        userId,
-        error: error ?? 'unknown',
-      });
+      return { outcome: 'retry_scheduled', retryCount: currentRetryCount + 1 };
     }
+    await this.emailRecordRepository.updateStatus(recordId, 'failed');
+    // Structured failure log — FR-012
+    console.error('[OutboxWorker] Email delivery permanently failed', {
+      recordId,
+      userId,
+      error: error ?? 'unknown',
+    });
+    return { outcome: 'failed', retryCount: currentRetryCount };
   }
 }
