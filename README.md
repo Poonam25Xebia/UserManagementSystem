@@ -84,7 +84,19 @@ For a production-style build: `npm run build` (outputs to `FRONTEND/dist/`).
 5. `app.listen(PORT)` (default 3000).
 6. `SIGINT`/`SIGTERM` → stop both workers → close HTTP server → close the SQLite handle + Redis → exit.
 
-There is no separate "wait for Redis ready" step — if Redis is unreachable at boot, the app still starts and binds the port; `GET /health` reports `db_reachable` for the SQLite file (always reachable once the file is created) and most OTP-rate-limit routes will fail on first use if Redis is down. Ensure Redis is up **before** `npm start`.
+There is no separate "wait for Redis ready" step — if Redis is unreachable at boot, the app still starts and binds the port; `GET /health` reports `db_reachable` for the SQLite file (always reachable once the file is created). Ensure Redis is up **before** `npm start`.
+
+### Redis resilience
+
+The shared client is built by `src/adapters/redis-client.ts` (`createRedisClient`) from `src/config/redis.config.ts` (`redisConfig`):
+
+- **Reconnects automatically** with exponential backoff (`REDIS_RETRY_BASE_DELAY_MS` doubled per attempt, capped at `REDIS_RETRY_MAX_DELAY_MS`) and never stops retrying while the app runs. Connection errors and reconnect attempts are logged as `[Redis] ...` (the URL is never logged) and never crash the process.
+- **Commands issued while disconnected are queued** and sent once the connection is back. They are rejected with an error, not dropped silently, if the connection doesn't come back within `REDIS_MAX_RETRIES_PER_REQUEST` attempts or `REDIS_COMMAND_TIMEOUT_MS`. In that case OTP routes fail for that request and recover on their own once Redis is reachable.
+- **Failover**: a `READONLY` reply (old primary demoted to replica) reconnects the client and resends the command.
+- **Atomic rate-limit counters**: `RedisRateLimitGuard` runs INCR and EXPIRE in one Lua script, so a dropped connection can't leave an `otp:rl:*` key without a TTL. Any such key left by earlier versions is repaired on the next attempt.
+- **Shutdown** uses `closeRedisClient`: `QUIT` when connected, otherwise an immediate disconnect that cancels pending reconnects.
+
+All `REDIS_*` settings are optional (see `BACKEND/.env.example`), and invalid values stop startup with a `Configuration error: ...` message. **Migration/rollback**: there are no new dependencies or data migrations. Existing `.env` files keep working unchanged. To roll back, revert this change; existing `otp:rl:*` keys are compatible both ways.
 
 ## Verifying it's running
 
@@ -102,6 +114,8 @@ cd BACKEND
 npm run test:unit          # no external dependencies (mocked db/Redis)
 npm run test:integration   # requires a reachable Redis (see .env); each spec gets its own isolated SQLite file
 ```
+
+`src/integration/redis-resilience.spec.ts` checks the Redis client against a live Redis under concurrent load, after a server-side disconnect (`CLIENT KILL`), and across a client restart. To run just that spec: `npx jest --selectProjects integration --testPathPattern redis-resilience`.
 
 **Note on integration tests**: each spec file (`src/integration/*.spec.ts`) now gets its own isolated SQLite database file (via `src/integration/test-db.ts`), so there's no shared-table truncation race between files.
 

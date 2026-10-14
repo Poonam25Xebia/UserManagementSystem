@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import { Redis } from 'ioredis';
 import { createDb } from './db/connection';
 import { runMigrations } from './db/migrate';
 import { createApp } from './app';
@@ -11,12 +10,12 @@ import { SendGridEmailAdapter } from './adapters/sendgrid-email.adapter';
 import { EmailOtpDeliveryAdapter } from './adapters/email-otp-delivery.adapter';
 import { OutboxWorker } from './workers/outbox.worker';
 import { AccountDeletionNotificationWorker } from './workers/account-deletion-notification.worker';
-import { otpConfig } from './config/otp.config';
+import { createRedisClient, closeRedisClient } from './adapters/redis-client';
 
 const db = createDb();
 runMigrations(db);
 
-const otpRedisClient = new Redis(otpConfig.redisUrl);
+const otpRedisClient = createRedisClient();
 const emailDeliveryPort = new SendGridEmailAdapter();
 const otpDeliveryPort = new EmailOtpDeliveryAdapter(emailDeliveryPort);
 const app = createApp(db, otpRedisClient, otpDeliveryPort, emailDeliveryPort);
@@ -51,7 +50,7 @@ function shutdown(): void {
   accountDeletionNotificationWorker.stop();
   server.close(() => {
     db.close();
-    otpRedisClient.quit().then(() => {
+    closeRedisClient(otpRedisClient).finally(() => {
       console.log('Shutdown complete.');
       process.exit(0);
     });
