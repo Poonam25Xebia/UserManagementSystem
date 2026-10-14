@@ -28,6 +28,7 @@ export interface IEmailRecordRepository {
     status: 'queued' | 'sent' | 'failed',
   ): Promise<void>;
   incrementRetryCount(recordId: string): Promise<void>;
+  countByStatus(status: 'queued' | 'sent' | 'failed'): Promise<number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,5 +149,15 @@ export class EmailRecordRepository implements IEmailRecordRepository {
         'UPDATE registration_email_records SET retry_count = retry_count + 1 WHERE record_id = ?',
       )
       .run(recordId);
+  }
+
+  /**
+   * Return the number of outbox records with the given delivery status.
+   */
+  async countByStatus(status: 'queued' | 'sent' | 'failed'): Promise<number> {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS count FROM registration_email_records WHERE delivery_status = ?')
+      .get(status) as { count: number | bigint } | undefined;
+    return row === undefined ? 0 : Number(row.count);
   }
 }

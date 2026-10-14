@@ -18,6 +18,8 @@
 export interface AppConfig {
   outboxPollIntervalMs: number;
   outboxMaxRetries: number;
+  /** Emit structured JSON logs from the outbox worker (default: true). */
+  outboxLoggingEnabled: boolean;
   tokenExpiryHours: number;
   bcryptCostFactor: number;
   activationBaseUrl: string;
@@ -55,6 +57,21 @@ function parsePositiveInt(envKey: string, defaultValue: number): number {
   return parsed;
 }
 
+function parseBoolean(envKey: string, defaultValue: boolean): boolean {
+  const raw = process.env[envKey];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultValue;
+  }
+  const normalised = raw.trim().toLowerCase();
+  if (['false', '0', 'no', 'off'].includes(normalised)) {
+    return false;
+  }
+  if (['true', '1', 'yes', 'on'].includes(normalised)) {
+    return true;
+  }
+  return defaultValue;
+}
+
 function requireEnvString(envKey: string): string {
   const value = process.env[envKey];
   if (!value || value.trim() === '') {
@@ -71,6 +88,7 @@ function requireEnvString(envKey: string): string {
 
 const outboxPollIntervalMs = parsePositiveInt('OUTBOX_POLL_INTERVAL_MS', 30_000);
 const outboxMaxRetries = parsePositiveInt('OUTBOX_MAX_RETRIES', 1);
+const outboxLoggingEnabled = parseBoolean('OUTBOX_LOGGING_ENABLED', true);
 const tokenExpiryHours = parsePositiveInt('TOKEN_EXPIRY_HOURS', 24);
 const bcryptCostFactor = parsePositiveInt('BCRYPT_COST_FACTOR', 12);
 
@@ -100,6 +118,7 @@ const passwordRecoveryEmailTemplateId = requireEnvString('PASSWORD_RECOVERY_EMAI
 export const appConfig: AppConfig = Object.freeze({
   outboxPollIntervalMs,
   outboxMaxRetries,
+  outboxLoggingEnabled,
   tokenExpiryHours,
   bcryptCostFactor,
   activationBaseUrl,
