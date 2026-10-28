@@ -11,6 +11,9 @@
  *   - SENDGRID_TEMPLATE_ID must be present and non-empty
  */
 
+import * as os from 'os';
+import { randomBytes } from 'crypto';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -18,6 +21,10 @@
 export interface AppConfig {
   outboxPollIntervalMs: number;
   outboxMaxRetries: number;
+  /** Lease (ms) on a claimed outbox record; after it expires another instance may reclaim it. */
+  outboxClaimLeaseMs: number;
+  /** Identifier this process writes into claimed_by when it claims an outbox record. */
+  outboxWorkerId: string;
   tokenExpiryHours: number;
   bcryptCostFactor: number;
   activationBaseUrl: string;
@@ -40,6 +47,10 @@ export interface AppConfig {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function defaultWorkerId(): string {
+  return `${os.hostname()}-${process.pid}-${randomBytes(4).toString('hex')}`;
+}
 
 function parsePositiveInt(envKey: string, defaultValue: number): number {
   const raw = process.env[envKey];
@@ -71,6 +82,14 @@ function requireEnvString(envKey: string): string {
 
 const outboxPollIntervalMs = parsePositiveInt('OUTBOX_POLL_INTERVAL_MS', 30_000);
 const outboxMaxRetries = parsePositiveInt('OUTBOX_MAX_RETRIES', 1);
+const outboxClaimLeaseMs = parsePositiveInt('OUTBOX_CLAIM_LEASE_MS', 300_000);
+const outboxWorkerId = process.env.OUTBOX_WORKER_ID?.trim() || defaultWorkerId();
+
+if (outboxClaimLeaseMs <= 0) {
+  throw new Error(
+    `Configuration error: OUTBOX_CLAIM_LEASE_MS must be > 0, got ${outboxClaimLeaseMs}.`,
+  );
+}
 const tokenExpiryHours = parsePositiveInt('TOKEN_EXPIRY_HOURS', 24);
 const bcryptCostFactor = parsePositiveInt('BCRYPT_COST_FACTOR', 12);
 
@@ -100,6 +119,8 @@ const passwordRecoveryEmailTemplateId = requireEnvString('PASSWORD_RECOVERY_EMAI
 export const appConfig: AppConfig = Object.freeze({
   outboxPollIntervalMs,
   outboxMaxRetries,
+  outboxClaimLeaseMs,
+  outboxWorkerId,
   tokenExpiryHours,
   bcryptCostFactor,
   activationBaseUrl,
